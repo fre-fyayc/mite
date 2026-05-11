@@ -11,7 +11,7 @@ struct QuickAddView: View {
     @State private var reviewPresetTitle = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: LayoutMetrics.sectionSpacing) {
             HStack {
                 Text("Recurring Presets")
                     .font(.title3).bold()
@@ -24,36 +24,40 @@ struct QuickAddView: View {
 
             StatusBannerView(infoMessage: viewModel.infoMessage, errorMessage: viewModel.errorMessage)
 
-            if viewModel.presetStore.presets.isEmpty {
-                ContentUnavailableView(
-                    "No Presets Yet",
-                    systemImage: "tray",
-                    description: Text("Create a preset for recurring work. Refresh catalog in Settings first if needed.")
-                )
-            } else {
-                List(selection: $selectedPreset) {
-                    ForEach(viewModel.presetStore.presets) { preset in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(preset.title).font(.headline)
-                            Text("\(projectName(for: preset.projectID)) • \(serviceName(for: preset.serviceID))")
-                                .foregroundStyle(.secondary)
-                            if !preset.note.isEmpty {
-                                Text(preset.note).font(.caption).foregroundStyle(.secondary)
+            GroupBox {
+                if viewModel.presetStore.presets.isEmpty {
+                    ContentUnavailableView(
+                        "No Presets Yet",
+                        systemImage: "tray",
+                        description: Text("Create a preset for recurring work. Refresh catalog in Settings first if needed.")
+                    )
+                    .frame(maxWidth: .infinity, minHeight: 180)
+                } else {
+                    List(selection: $selectedPreset) {
+                        ForEach(viewModel.presetStore.presets) { preset in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(preset.title).font(.headline)
+                                Text("\(projectName(for: preset.projectID)) • \(serviceName(for: preset.serviceID))")
+                                    .foregroundStyle(.secondary)
+                                if !preset.note.isEmpty {
+                                    Text(preset.note).font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            .tag(preset)
+                            .contextMenu {
+                                Button("Edit") {
+                                    editingPreset = preset
+                                }
+                                Button("Delete", role: .destructive) {
+                                    viewModel.deletePreset(id: preset.id)
+                                }
                             }
                         }
-                        .tag(preset)
-                        .contextMenu {
-                            Button("Edit") {
-                                editingPreset = preset
-                            }
-                            Button("Delete", role: .destructive) {
-                                viewModel.deletePreset(id: preset.id)
-                            }
-                        }
+                        .onMove(perform: movePresets)
                     }
-                    .onMove(perform: movePresets)
                 }
             }
+            .frame(maxHeight: .infinity)
 
             HStack {
                 Button("Move Up") { moveSelection(delta: -1) }
@@ -69,7 +73,18 @@ struct QuickAddView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(selectedPreset == nil || viewModel.isBusy)
             }
+
+            DailyEntriesTimelineView(
+                entries: viewModel.todayEntries,
+                isLoading: viewModel.isLoadingTodayEntries,
+                errorMessage: viewModel.entriesErrorMessage,
+                projectName: viewModel.projectName(for:),
+                serviceName: viewModel.serviceName(for:)
+            ) {
+                Task { await viewModel.loadTodayEntries(showBannerOnError: true) }
+            }
         }
+        .padding(LayoutMetrics.windowMargin)
         .sheet(isPresented: $showCreatePreset) {
             PresetEditorView(
                 projects: viewModel.catalogStore.projects,
@@ -98,6 +113,9 @@ struct QuickAddView: View {
                     await viewModel.submitEntry(draft)
                 }
             }
+        }
+        .task {
+            await viewModel.loadTodayEntries()
         }
     }
 

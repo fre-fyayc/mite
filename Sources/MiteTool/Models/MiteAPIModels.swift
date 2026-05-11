@@ -54,3 +54,35 @@ struct MiteCreateTimeEntryPayload: Encodable {
         case dateAt = "date_at"
     }
 }
+
+struct MiteTimeEntryEnvelope: Decodable {
+    let timeEntry: MiteTimeEntryPayload
+
+    enum CodingKeys: String, CodingKey {
+        case timeEntry = "time_entry"
+    }
+}
+
+struct MiteTimeEntryPayload: Decodable {
+    let id: Int
+    let projectID: Int?
+    let serviceID: Int?
+    let projectName: String?
+    let serviceName: String?
+    let note: String?
+    let minutes: Int
+    let dateAtRaw: String
+    let createdAtRaw: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case projectID = "project_id"
+        case serviceID = "service_id"
+        case projectName = "project_name"
+        case serviceName = "service_name"
+        case note
+        case minutes
+        case dateAtRaw = "date_at"
+        case createdAtRaw = "created_at"
+    }
+}

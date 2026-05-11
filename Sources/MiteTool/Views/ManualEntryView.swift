@@ -17,14 +17,14 @@ struct ManualEntryView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: LayoutMetrics.sectionSpacing) {
             Text("Manual Entry")
                 .font(.title3).bold()
 
             StatusBannerView(infoMessage: viewModel.infoMessage, errorMessage: viewModel.errorMessage)
 
             GroupBox("Entry Details") {
-                VStack(alignment: .leading, spacing: 12) {
+                Form {
                     Picker("Project", selection: $selectedProjectID) {
                         Text("Select project").tag(Optional<Int>.none)
                         ForEach(viewModel.catalogStore.projects) { project in
@@ -45,7 +45,8 @@ struct ManualEntryView: View {
                     TextField("Note", text: $note, prompt: Text("What did you work on?"))
                         .textFieldStyle(.roundedBorder)
                 }
-                .padding(.top, 4)
+                .formStyle(.grouped)
+                .frame(minHeight: 220)
             }
 
             HStack {
@@ -73,7 +74,20 @@ struct ManualEntryView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(!canSubmit)
             }
-            Spacer()
+
+            DailyEntriesTimelineView(
+                entries: viewModel.todayEntries,
+                isLoading: viewModel.isLoadingTodayEntries,
+                errorMessage: viewModel.entriesErrorMessage,
+                projectName: viewModel.projectName(for:),
+                serviceName: viewModel.serviceName(for:)
+            ) {
+                Task { await viewModel.loadTodayEntries(showBannerOnError: true) }
+            }
+        }
+        .padding(LayoutMetrics.windowMargin)
+        .task {
+            await viewModel.loadTodayEntries()
         }
     }
 }

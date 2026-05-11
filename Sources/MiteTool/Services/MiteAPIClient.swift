@@ -4,6 +4,7 @@ protocol MiteAPIClienting: Sendable {
     func testConnection(config: MiteConfiguration) async throws
     func fetchProjects(config: MiteConfiguration) async throws -> [MiteProject]
     func fetchServices(config: MiteConfiguration) async throws -> [MiteService]
+    func fetchTimeEntries(for date: Date, config: MiteConfiguration) async throws -> [MiteTimeEntry]
     func createTimeEntry(_ draft: TimeEntryDraft, config: MiteConfiguration) async throws
 }
 
@@ -52,6 +53,25 @@ struct MiteAPIClient: MiteAPIClienting, Sendable {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
+    func fetchTimeEntries(for date: Date, config: MiteConfiguration) async throws -> [MiteTimeEntry] {
+        let dayValue = Self.makeDayFormatter().string(from: date)
+        let envelopes: [MiteTimeEntryEnvelope] = try await sendJSONRequest(
+            config: config,
+            path: "/time_entries.json",
+            method: "GET",
+            queryItems: [URLQueryItem(name: "at", value: dayValue)],
+            body: Optional<MiteCreateTimeEntryBody>.none
+        )
+
+        return envelopes
+            .map { mapTimeEntry($0.timeEntry) }
+            .sorted { lhs, rhs in
+                let lhsDate = lhs.createdAt ?? lhs.date
+                let rhsDate = rhs.createdAt ?? rhs.date
+                return lhsDate > rhsDate
+            }
+    }
+
     func createTimeEntry(_ draft: TimeEntryDraft, config: MiteConfiguration) async throws {
         guard let projectID = draft.projectID, let serviceID = draft.serviceID else {
             throw AppError.validation(message: "Please select both project and service.")
@@ -84,9 +104,16 @@ struct MiteAPIClient: MiteAPIClienting, Sendable {
         config: MiteConfiguration,
         path: String,
         method: String,
+        queryItems: [URLQueryItem] = [],
         body: Body?
     ) async throws -> T {
-        let data = try await sendDataRequest(config: config, path: path, method: method, body: body)
+        let data = try await sendDataRequest(
+            config: config,
+            path: path,
+            method: method,
+            queryItems: queryItems,
+            body: body
+        )
         do {
             return try JSONDecoder().decode(T.self, from: data)
         } catch {
@@ -98,6 +125,7 @@ struct MiteAPIClient: MiteAPIClienting, Sendable {
         config: MiteConfiguration,
         path: String,
         method: String,
+        queryItems: [URLQueryItem] = [],
         body: Body?
     ) async throws -> Data {
         guard !config.accountSubdomain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -111,6 +139,7 @@ struct MiteAPIClient: MiteAPIClienting, Sendable {
         components.scheme = "https"
         components.host = host
         components.path = path
+        components.queryItems = queryItems.isEmpty ? nil : queryItems
         guard let url = components.url else {
             throw AppError.invalidURL
         }
@@ -163,5 +192,42 @@ struct MiteAPIClient: MiteAPIClienting, Sendable {
         default:
             return .api(message: "Request failed with HTTP \(statusCode).")
         }
+    }
+
+    private func mapTimeEntry(_ payload: MiteTimeEntryPayload) -> MiteTimeEntry {
+        let fallbackDate = Date.now
+        let parsedDate = Self.makeDayFormatter().date(from: payload.dateAtRaw) ?? fallbackDate
+        let createdAt = parseISO8601(payload.createdAtRaw)
+        return MiteTimeEntry(
+            id: payload.id,
+            projectID: payload.projectID,
+            serviceID: payload.serviceID,
+            projectName: payload.projectName,
+            serviceName: payload.serviceName,
+            note: payload.note ?? "",
+            minutes: payload.minutes,
+            date: parsedDate,
+            createdAt: createdAt
+        )
+    }
+
+    private func parseISO8601(_ raw: String?) -> Date? {
+        guard let raw, !raw.isEmpty else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        if let parsed = formatter.date(from: raw) {
+            return parsed
+        }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: raw)
+    }
+
+    private static func makeDayFormatter() -> DateFormatter {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter
     }
 }

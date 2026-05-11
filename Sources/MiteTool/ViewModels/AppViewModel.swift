@@ -5,6 +5,10 @@ final class AppViewModel: ObservableObject {
     @Published var isBusy = false
     @Published var infoMessage: String?
     @Published var errorMessage: String?
+    @Published var selectedEntriesDate = Calendar.current.startOfDay(for: .now)
+    @Published var todayEntries: [MiteTimeEntry] = []
+    @Published var isLoadingTodayEntries = false
+    @Published var entriesErrorMessage: String?
 
     let configStore: ConfigurationStore
     let presetStore: PresetStore
@@ -76,7 +80,9 @@ final class AppViewModel: ObservableObject {
     func submitEntry(_ draft: TimeEntryDraft) async {
         clearMessages()
         isBusy = true
-        defer { isBusy = false }
+        defer {
+            isBusy = false
+        }
 
         do {
             guard let config = try configStore.currentConfiguration() else {
@@ -84,9 +90,55 @@ final class AppViewModel: ObservableObject {
             }
             try await apiClient.createTimeEntry(draft, config: config)
             infoMessage = "Time entry saved."
+            await loadEntries(for: selectedEntriesDate, showBannerOnError: false)
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
+    }
+
+    func loadTodayEntries(showBannerOnError: Bool = false) async {
+        await loadEntries(for: Calendar.current.startOfDay(for: .now), showBannerOnError: showBannerOnError)
+    }
+
+    func loadEntries(for date: Date, showBannerOnError: Bool = false) async {
+        isLoadingTodayEntries = true
+        entriesErrorMessage = nil
+        defer { isLoadingTodayEntries = false }
+
+        do {
+            guard let config = try configStore.currentConfiguration() else {
+                todayEntries = []
+                return
+            }
+            selectedEntriesDate = Calendar.current.startOfDay(for: date)
+            todayEntries = try await apiClient.fetchTimeEntries(for: selectedEntriesDate, config: config)
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            entriesErrorMessage = message
+            if showBannerOnError {
+                errorMessage = message
+            }
+        }
+    }
+
+    func projectName(for entry: MiteTimeEntry) -> String {
+        if let projectName = entry.projectName, !projectName.isEmpty {
+            return projectName
+        }
+        if let projectID = entry.projectID {
+            return catalogStore.projects.first(where: { $0.id == projectID })?.name ?? "Project \(projectID)"
+        }
+        return "Unknown project"
+    }
+
+    func serviceName(for entry: MiteTimeEntry) -> String {
+        if let serviceName = entry.serviceName, !serviceName.isEmpty {
+            return serviceName
+        }
+        if let serviceID = entry.serviceID {
+            return catalogStore.services.first(where: { $0.id == serviceID })?.name ?? "Service \(serviceID)"
+        }
+        return "Unknown service"
     }
 
     func addPreset(_ preset: MitePreset) {

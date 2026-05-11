@@ -16,6 +16,5 @@ struct RootTabView: View {
                     Label("Settings", systemImage: "gear")
                 }
         }
-        .padding(16)
     }
 }

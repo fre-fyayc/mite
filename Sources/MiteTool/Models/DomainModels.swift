@@ -30,3 +30,15 @@ struct TimeEntryDraft: Codable, Hashable {
         TimeEntryDraft(projectID: nil, serviceID: nil, note: "", minutes: 60, date: .now)
     }
 }
+
+struct MiteTimeEntry: Identifiable, Codable, Hashable {
+    let id: Int
+    let projectID: Int?
+    let serviceID: Int?
+    let projectName: String?
+    let serviceName: String?
+    let note: String
+    let minutes: Int
+    let date: Date
+    let createdAt: Date?
+}
