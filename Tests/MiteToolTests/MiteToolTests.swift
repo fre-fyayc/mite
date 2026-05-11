@@ -4,6 +4,7 @@ import Testing
 
 private final class URLProtocolMock: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var requestHandler: (@Sendable (URLRequest) throws -> (HTTPURLResponse, Data))?
+    nonisolated(unsafe) static var requestCount = 0
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -38,6 +39,7 @@ private final class MemoryFileStorage: FileStoring, @unchecked Sendable {
     }
 }
 
+@Suite(.serialized)
 struct MiteToolTests {
     @Test
     func createTimeEntrySendsExpectedPayload() async throws {
@@ -99,6 +101,44 @@ struct MiteToolTests {
         reloadedStore.load()
         #expect(reloadedStore.presets.count == 1)
         #expect(reloadedStore.presets[0].title == "Daily standup")
+    }
+
+    @Test
+    func fetchTimeEntriesFiltersByCurrentUser() async throws {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [URLProtocolMock.self]
+        let session = URLSession(configuration: config)
+        let client = MiteAPIClient(session: session, userAgent: "Tests")
+
+        URLProtocolMock.requestCount = 0
+        URLProtocolMock.requestHandler = { request in
+            URLProtocolMock.requestCount += 1
+            let url = try #require(request.url)
+            #expect(request.httpMethod == "GET")
+
+            if URLProtocolMock.requestCount == 1 {
+                #expect(url.absoluteString == "https://demo.mite.de/myself.json")
+                let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+                let payload = #"{"user":{"id":42,"name":"Tester"}}"#.data(using: .utf8) ?? Data()
+                return (response, payload)
+            }
+
+            #expect(url.query?.contains("at=2026-05-11") == true)
+            #expect(url.query?.contains("user_id=42") == true)
+            let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!
+            let payload = #"[{"time_entry":{"id":99,"project_id":1,"service_id":2,"project_name":"Project","service_name":"Service","note":"Focused work","minutes":30,"date_at":"2026-05-11","created_at":"2026-05-11T10:00:00Z"}}]"#.data(using: .utf8) ?? Data()
+            return (response, payload)
+        }
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let date = try #require(formatter.date(from: "2026-05-11"))
+        let miteConfig = MiteConfiguration(accountSubdomain: "demo", apiKey: "secret")
+
+        let entries = try await client.fetchTimeEntries(for: date, config: miteConfig)
+        #expect(URLProtocolMock.requestCount == 2)
+        #expect(entries.count == 1)
+        #expect(entries[0].id == 99)
     }
 }
 

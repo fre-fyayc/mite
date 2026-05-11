@@ -55,11 +55,15 @@ struct MiteAPIClient: MiteAPIClienting, Sendable {
 
     func fetchTimeEntries(for date: Date, config: MiteConfiguration) async throws -> [MiteTimeEntry] {
         let dayValue = Self.makeDayFormatter().string(from: date)
+        let userID = try await fetchMyselfID(config: config)
         let envelopes: [MiteTimeEntryEnvelope] = try await sendJSONRequest(
             config: config,
             path: "/time_entries.json",
             method: "GET",
-            queryItems: [URLQueryItem(name: "at", value: dayValue)],
+            queryItems: [
+                URLQueryItem(name: "at", value: dayValue),
+                URLQueryItem(name: "user_id", value: String(userID))
+            ],
             body: Optional<MiteCreateTimeEntryBody>.none
         )
 
@@ -119,6 +123,16 @@ struct MiteAPIClient: MiteAPIClienting, Sendable {
         } catch {
             throw AppError.decodingFailed
         }
+    }
+
+    private func fetchMyselfID(config: MiteConfiguration) async throws -> Int {
+        let myself: MiteMyselfEnvelope = try await sendJSONRequest(
+            config: config,
+            path: "/myself.json",
+            method: "GET",
+            body: Optional<MiteCreateTimeEntryBody>.none
+        )
+        return myself.user.id
     }
 
     private func sendDataRequest<Body: Encodable>(
@@ -227,7 +241,8 @@ struct MiteAPIClient: MiteAPIClienting, Sendable {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        // `date_at` is a calendar day in the user's context, not a UTC timestamp.
+        formatter.timeZone = .autoupdatingCurrent
         return formatter
     }
 }

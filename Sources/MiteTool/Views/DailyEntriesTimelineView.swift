@@ -19,7 +19,7 @@ struct DailyEntriesTimelineView: View {
         GroupBox {
             VStack(alignment: .leading, spacing: LayoutMetrics.compactSpacing) {
                 HStack {
-                    Text("Today’s Entries")
+                    Text("My Today’s Entries")
                         .font(.headline)
                     Spacer()
                     Button("Refresh", action: refreshAction)
