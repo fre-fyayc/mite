@@ -1,0 +1,87 @@
+import SwiftUI
+
+struct QuickEntryReviewView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let projects: [MiteProject]
+    let services: [MiteService]
+    let presetTitle: String
+    let onSubmit: (TimeEntryDraft) -> Void
+
+    @State private var selectedProjectID: Int?
+    @State private var selectedServiceID: Int?
+    @State private var note: String
+    @State private var minutes: Int
+    @State private var date: Date
+
+    init(
+        presetTitle: String,
+        initialDraft: TimeEntryDraft,
+        projects: [MiteProject],
+        services: [MiteService],
+        onSubmit: @escaping (TimeEntryDraft) -> Void
+    ) {
+        self.presetTitle = presetTitle
+        self.projects = projects
+        self.services = services
+        self.onSubmit = onSubmit
+        _selectedProjectID = State(initialValue: initialDraft.projectID ?? projects.first?.id)
+        _selectedServiceID = State(initialValue: initialDraft.serviceID ?? services.first?.id)
+        _note = State(initialValue: initialDraft.note)
+        _minutes = State(initialValue: max(1, initialDraft.minutes))
+        _date = State(initialValue: initialDraft.date)
+    }
+
+    private var canSave: Bool {
+        selectedProjectID != nil &&
+        selectedServiceID != nil &&
+        minutes > 0
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Review Entry")
+                .font(.headline)
+            Text("Preset: \(presetTitle)")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            Picker("Project", selection: $selectedProjectID) {
+                ForEach(projects) { project in
+                    Text(project.name).tag(Optional(project.id))
+                }
+            }
+
+            Picker("Service", selection: $selectedServiceID) {
+                ForEach(services) { service in
+                    Text(service.name).tag(Optional(service.id))
+                }
+            }
+
+            DatePicker("Date", selection: $date, displayedComponents: .date)
+            Stepper("Minutes: \(minutes)", value: $minutes, in: 1...720, step: 5)
+
+            TextField("Note", text: $note, prompt: Text("What did you work on?"))
+                .textFieldStyle(.roundedBorder)
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Save Entry") {
+                    var draft = TimeEntryDraft.empty()
+                    draft.projectID = selectedProjectID
+                    draft.serviceID = selectedServiceID
+                    draft.note = note.trimmingCharacters(in: .whitespacesAndNewlines)
+                    draft.minutes = minutes
+                    draft.date = date
+                    onSubmit(draft)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!canSave)
+            }
+        }
+        .padding(18)
+        .frame(width: 440)
+    }
+}
