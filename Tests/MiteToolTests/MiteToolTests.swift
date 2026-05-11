@@ -1,5 +1,5 @@
-import XCTest
 import Foundation
+import Testing
 @testable import MiteTool
 
 private final class URLProtocolMock: URLProtocol, @unchecked Sendable {
@@ -38,27 +38,28 @@ private final class MemoryFileStorage: FileStoring, @unchecked Sendable {
     }
 }
 
-final class MiteToolTests: XCTestCase {
-    func testCreateTimeEntrySendsExpectedPayload() async throws {
+struct MiteToolTests {
+    @Test
+    func createTimeEntrySendsExpectedPayload() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [URLProtocolMock.self]
         let session = URLSession(configuration: config)
         let client = MiteAPIClient(session: session, userAgent: "Tests")
 
         URLProtocolMock.requestHandler = { request in
-            XCTAssertEqual(request.httpMethod, "POST")
-            XCTAssertEqual(request.url?.absoluteString, "https://demo.mite.de/time_entries.json")
-            XCTAssertEqual(request.value(forHTTPHeaderField: "X-MiteApiKey"), "secret")
-            XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
-            let body = try XCTUnwrap(request.httpBody)
+            #expect(request.httpMethod == "POST")
+            #expect(request.url?.absoluteString == "https://demo.mite.de/time_entries.json")
+            #expect(request.value(forHTTPHeaderField: "X-MiteApiKey") == "secret")
+            #expect(request.value(forHTTPHeaderField: "Content-Type") == "application/json")
+            let body = try #require(requestBodyData(from: request))
             let bodyString = String(decoding: body, as: UTF8.self)
-            XCTAssertTrue(bodyString.contains("\"project_id\":1"))
-            XCTAssertTrue(bodyString.contains("\"service_id\":2"))
-            XCTAssertTrue(bodyString.contains("\"minutes\":45"))
-            XCTAssertTrue(bodyString.contains("\"date_at\":\"2026-05-11\""))
-            XCTAssertTrue(bodyString.contains("\"note\":\"Deep work\""))
+            #expect(bodyString.contains("\"project_id\":1"))
+            #expect(bodyString.contains("\"service_id\":2"))
+            #expect(bodyString.contains("\"minutes\":45"))
+            #expect(bodyString.contains("\"date_at\":\"2026-05-11\""))
+            #expect(bodyString.contains("\"note\":\"Deep work\""))
 
-            let url = try XCTUnwrap(request.url)
+            let url = try #require(request.url)
             let response = HTTPURLResponse(url: url, statusCode: 201, httpVersion: nil, headerFields: nil)!
             return (response, Data())
         }
@@ -70,18 +71,18 @@ final class MiteToolTests: XCTestCase {
         draft.minutes = 45
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
-        draft.date = try XCTUnwrap(formatter.date(from: "2026-05-11"))
+        draft.date = try #require(formatter.date(from: "2026-05-11"))
 
         let miteConfig = MiteConfiguration(accountSubdomain: "demo", apiKey: "secret")
         try await client.createTimeEntry(draft, config: miteConfig)
     }
 
-    @MainActor
-    func testPresetStorePersistsEntries() throws {
+    @Test @MainActor
+    func presetStorePersistsEntries() throws {
         let storage = MemoryFileStorage()
         let store = PresetStore(storage: storage)
         store.load()
-        XCTAssertTrue(store.presets.isEmpty)
+        #expect(store.presets.isEmpty)
 
         try store.add(
             MitePreset(
@@ -96,7 +97,37 @@ final class MiteToolTests: XCTestCase {
 
         let reloadedStore = PresetStore(storage: storage)
         reloadedStore.load()
-        XCTAssertEqual(reloadedStore.presets.count, 1)
-        XCTAssertEqual(reloadedStore.presets[0].title, "Daily standup")
+        #expect(reloadedStore.presets.count == 1)
+        #expect(reloadedStore.presets[0].title == "Daily standup")
     }
+}
+
+private func requestBodyData(from request: URLRequest) -> Data? {
+    if let body = request.httpBody {
+        return body
+    }
+    guard let stream = request.httpBodyStream else {
+        return nil
+    }
+
+    stream.open()
+    defer { stream.close() }
+
+    var data = Data()
+    let bufferSize = 1024
+    let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+    defer { buffer.deallocate() }
+
+    while stream.hasBytesAvailable {
+        let readCount = stream.read(buffer, maxLength: bufferSize)
+        if readCount < 0 {
+            return nil
+        }
+        if readCount == 0 {
+            break
+        }
+        data.append(buffer, count: readCount)
+    }
+
+    return data
 }
