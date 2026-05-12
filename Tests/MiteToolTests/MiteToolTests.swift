@@ -39,6 +39,18 @@ private final class MemoryFileStorage: FileStoring, @unchecked Sendable {
     }
 }
 
+private final class KeychainStoreMock: KeychainStoring, @unchecked Sendable {
+    private var values: [String: String] = [:]
+
+    func save(_ value: String, service: String, account: String) throws {
+        values["\(service)|\(account)"] = value
+    }
+
+    func read(service: String, account: String) throws -> String? {
+        values["\(service)|\(account)"]
+    }
+}
+
 @Suite(.serialized)
 struct MiteToolTests {
     @Test
@@ -139,6 +151,33 @@ struct MiteToolTests {
         #expect(URLProtocolMock.requestCount == 2)
         #expect(entries.count == 1)
         #expect(entries[0].id == 99)
+    }
+
+    @Test @MainActor
+    func configurationStoreUsesDefaultTimeEntryPreferences() {
+        let defaults = UserDefaults(suiteName: "MiteToolTests.ConfigurationDefaults")!
+        defaults.removePersistentDomain(forName: "MiteToolTests.ConfigurationDefaults")
+        let keychain = KeychainStoreMock()
+        let store = ConfigurationStore(defaults: defaults, keychain: keychain)
+
+        #expect(store.timeEntryIntervalMinutes == 15)
+        #expect(store.wholeDayHours == 8.0)
+        #expect(store.wholeDayMinutes == 480)
+    }
+
+    @Test @MainActor
+    func configurationStorePersistsTimeEntryPreferences() {
+        let defaults = UserDefaults(suiteName: "MiteToolTests.ConfigurationPersistence")!
+        defaults.removePersistentDomain(forName: "MiteToolTests.ConfigurationPersistence")
+        let keychain = KeychainStoreMock()
+
+        let store = ConfigurationStore(defaults: defaults, keychain: keychain)
+        store.saveTimeEntryPreferences(intervalMinutes: 30, wholeDayHours: 6.5)
+
+        let reloadedStore = ConfigurationStore(defaults: defaults, keychain: keychain)
+        #expect(reloadedStore.timeEntryIntervalMinutes == 30)
+        #expect(reloadedStore.wholeDayHours == 6.5)
+        #expect(reloadedStore.wholeDayMinutes == 390)
     }
 }
 

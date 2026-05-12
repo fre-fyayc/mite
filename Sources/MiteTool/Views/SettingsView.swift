@@ -5,6 +5,8 @@ struct SettingsView: View {
 
     @State private var accountSubdomain = ""
     @State private var apiKey = ""
+    @State private var selectedInterval = ConfigurationStore.defaultIntervalMinutes
+    @State private var wholeDayHours = ConfigurationStore.defaultWholeDayHours
 
     var body: some View {
         VStack(alignment: .leading, spacing: LayoutMetrics.sectionSpacing) {
@@ -57,11 +59,46 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            GroupBox("Time Entry Defaults") {
+                Form {
+                    Picker("Interval", selection: $selectedInterval) {
+                        ForEach(ConfigurationStore.allowedIntervals, id: \.self) { interval in
+                            Text("\(interval) min").tag(interval)
+                        }
+                    }
+
+                    Stepper(
+                        "Whole Day Hours: \(wholeDayHours, specifier: "%.1f")",
+                        value: $wholeDayHours,
+                        in: ConfigurationStore.wholeDayHoursRange,
+                        step: 0.5
+                    )
+                }
+                .formStyle(.grouped)
+                .frame(minHeight: 120)
+
+                HStack {
+                    Spacer()
+                    Button("Save Time Defaults") {
+                        viewModel.clearMessages()
+                        viewModel.configStore.saveTimeEntryPreferences(
+                            intervalMinutes: selectedInterval,
+                            wholeDayHours: wholeDayHours
+                        )
+                        viewModel.infoMessage = "Time entry defaults saved."
+                    }
+                    .disabled(viewModel.isBusy)
+                }
+                .padding(.top, 8)
+            }
+
             Spacer()
         }
         .padding(LayoutMetrics.windowMargin)
         .onAppear {
             accountSubdomain = viewModel.configStore.accountSubdomain
+            selectedInterval = viewModel.configStore.timeEntryIntervalMinutes
+            wholeDayHours = viewModel.configStore.wholeDayHours
         }
     }
 }

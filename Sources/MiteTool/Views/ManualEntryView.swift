@@ -8,6 +8,7 @@ struct ManualEntryView: View {
     @State private var note = ""
     @State private var minutes = 60
     @State private var date = Date.now
+    @State private var isWholeDay = false
 
     private var canSubmit: Bool {
         selectedProjectID != nil &&
@@ -40,7 +41,19 @@ struct ManualEntryView: View {
                     }
 
                     DatePicker("Date", selection: $date, displayedComponents: .date)
-                    Stepper("Minutes: \(minutes)", value: $minutes, in: 1...720, step: 5)
+                    Toggle("Whole Day", isOn: $isWholeDay)
+                        .onChange(of: isWholeDay) { _, newValue in
+                            if newValue {
+                                minutes = viewModel.configStore.wholeDayMinutes
+                            }
+                        }
+                    Stepper(
+                        "Minutes: \(minutes)",
+                        value: $minutes,
+                        in: 1...720,
+                        step: viewModel.configStore.timeEntryIntervalMinutes
+                    )
+                    .disabled(isWholeDay)
 
                     TextField("Note", text: $note, prompt: Text("What did you work on?"))
                         .textFieldStyle(.roundedBorder)
@@ -56,6 +69,7 @@ struct ManualEntryView: View {
                     note = ""
                     minutes = 60
                     date = .now
+                    isWholeDay = false
                     viewModel.clearMessages()
                 }
                 Spacer()
@@ -88,6 +102,11 @@ struct ManualEntryView: View {
         .padding(LayoutMetrics.windowMargin)
         .task {
             await viewModel.loadTodayEntries()
+        }
+        .onChange(of: viewModel.configStore.wholeDayHours) { _, _ in
+            if isWholeDay {
+                minutes = viewModel.configStore.wholeDayMinutes
+            }
         }
     }
 }

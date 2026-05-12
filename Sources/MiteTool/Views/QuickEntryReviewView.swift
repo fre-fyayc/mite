@@ -2,6 +2,7 @@ import SwiftUI
 
 struct QuickEntryReviewView: View {
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var viewModel: AppViewModel
 
     let projects: [MiteProject]
     let services: [MiteService]
@@ -13,6 +14,7 @@ struct QuickEntryReviewView: View {
     @State private var note: String
     @State private var minutes: Int
     @State private var date: Date
+    @State private var isWholeDay = false
 
     init(
         presetTitle: String,
@@ -59,7 +61,19 @@ struct QuickEntryReviewView: View {
             }
 
             DatePicker("Date", selection: $date, displayedComponents: .date)
-            Stepper("Minutes: \(minutes)", value: $minutes, in: 1...720, step: 5)
+            Toggle("Whole Day", isOn: $isWholeDay)
+                .onChange(of: isWholeDay) { _, newValue in
+                    if newValue {
+                        minutes = viewModel.configStore.wholeDayMinutes
+                    }
+                }
+            Stepper(
+                "Minutes: \(minutes)",
+                value: $minutes,
+                in: 1...720,
+                step: viewModel.configStore.timeEntryIntervalMinutes
+            )
+            .disabled(isWholeDay)
 
             TextField("Note", text: $note, prompt: Text("What did you work on?"))
                 .textFieldStyle(.roundedBorder)
@@ -83,5 +97,10 @@ struct QuickEntryReviewView: View {
         }
         .padding(18)
         .frame(width: 440)
+        .onChange(of: viewModel.configStore.wholeDayHours) { _, _ in
+            if isWholeDay {
+                minutes = viewModel.configStore.wholeDayMinutes
+            }
+        }
     }
 }
