@@ -25,7 +25,7 @@ struct ManualEntryView: View {
             StatusBannerView(infoMessage: viewModel.infoMessage, errorMessage: viewModel.errorMessage)
 
             GroupBox("Entry Details") {
-                Form {
+                VStack(alignment: .leading, spacing: LayoutMetrics.compactSpacing) {
                     Picker("Project", selection: $selectedProjectID) {
                         Text("Select project").tag(Optional<Int>.none)
                         ForEach(viewModel.catalogStore.projects) { project in
@@ -58,8 +58,7 @@ struct ManualEntryView: View {
                     TextField("Note", text: $note, prompt: Text("What did you work on?"))
                         .textFieldStyle(.roundedBorder)
                 }
-                .formStyle(.grouped)
-                .frame(minHeight: 220)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             HStack {
