@@ -163,6 +163,9 @@ struct MiteToolTests {
         #expect(store.timeEntryIntervalMinutes == 15)
         #expect(store.wholeDayHours == 8.0)
         #expect(store.wholeDayMinutes == 480)
+        #expect(store.selectionDisplayMode == .allEntries)
+        #expect(store.favoriteProjectIDs.isEmpty)
+        #expect(store.favoriteServiceIDs.isEmpty)
     }
 
     @Test @MainActor
@@ -173,11 +176,17 @@ struct MiteToolTests {
 
         let store = ConfigurationStore(defaults: defaults, keychain: keychain)
         store.saveTimeEntryPreferences(intervalMinutes: 30, wholeDayHours: 6.5)
+        store.saveSelectionPreferences(mode: .favoritesFirst)
+        store.setProjectFavorite(10, isFavorite: true)
+        store.setServiceFavorite(20, isFavorite: true)
 
         let reloadedStore = ConfigurationStore(defaults: defaults, keychain: keychain)
         #expect(reloadedStore.timeEntryIntervalMinutes == 30)
         #expect(reloadedStore.wholeDayHours == 6.5)
         #expect(reloadedStore.wholeDayMinutes == 390)
+        #expect(reloadedStore.selectionDisplayMode == .favoritesFirst)
+        #expect(reloadedStore.favoriteProjectIDs.contains(10))
+        #expect(reloadedStore.favoriteServiceIDs.contains(20))
     }
 }
 

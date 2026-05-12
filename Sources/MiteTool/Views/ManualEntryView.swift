@@ -17,6 +17,14 @@ struct ManualEntryView: View {
         !viewModel.isBusy
     }
 
+    private var selectableProjects: [MiteProject] {
+        viewModel.preferredProjects(include: selectedProjectID)
+    }
+
+    private var selectableServices: [MiteService] {
+        viewModel.preferredServices(include: selectedServiceID)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: LayoutMetrics.sectionSpacing) {
             Text("Manual Entry")
@@ -28,14 +36,14 @@ struct ManualEntryView: View {
                 VStack(alignment: .leading, spacing: LayoutMetrics.compactSpacing) {
                     Picker("Project", selection: $selectedProjectID) {
                         Text("Select project").tag(Optional<Int>.none)
-                        ForEach(viewModel.catalogStore.projects) { project in
+                        ForEach(selectableProjects) { project in
                             Text(project.name).tag(Optional(project.id))
                         }
                     }
 
                     Picker("Service", selection: $selectedServiceID) {
                         Text("Select service").tag(Optional<Int>.none)
-                        ForEach(viewModel.catalogStore.services) { service in
+                        ForEach(selectableServices) { service in
                             Text(service.name).tag(Optional(service.id))
                         }
                     }

@@ -1,5 +1,22 @@
 import Foundation
 
+enum SelectionDisplayMode: String, CaseIterable, Codable {
+    case allEntries
+    case favoritesFirst
+    case favoritesOnly
+
+    var title: String {
+        switch self {
+        case .allEntries:
+            return "All Entries"
+        case .favoritesFirst:
+            return "Favorites First"
+        case .favoritesOnly:
+            return "Favorites Only"
+        }
+    }
+}
+
 struct MiteProject: Identifiable, Codable, Hashable {
     let id: Int
     let name: String

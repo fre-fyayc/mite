@@ -19,7 +19,7 @@ struct QuickAddView: View {
                 Button("New Preset") {
                     showCreatePreset = true
                 }
-                .disabled(viewModel.catalogStore.projects.isEmpty || viewModel.catalogStore.services.isEmpty)
+                .disabled(viewModel.preferredProjects().isEmpty || viewModel.preferredServices().isEmpty)
             }
 
             StatusBannerView(infoMessage: viewModel.infoMessage, errorMessage: viewModel.errorMessage)
@@ -87,16 +87,16 @@ struct QuickAddView: View {
         .padding(LayoutMetrics.windowMargin)
         .sheet(isPresented: $showCreatePreset) {
             PresetEditorView(
-                projects: viewModel.catalogStore.projects,
-                services: viewModel.catalogStore.services
+                projects: viewModel.preferredProjects(),
+                services: viewModel.preferredServices()
             ) { preset in
                 viewModel.addPreset(preset)
             }
         }
         .sheet(item: $editingPreset) { preset in
             PresetEditorView(
-                projects: viewModel.catalogStore.projects,
-                services: viewModel.catalogStore.services,
+                projects: viewModel.preferredProjects(include: preset.projectID),
+                services: viewModel.preferredServices(include: preset.serviceID),
                 existingPreset: preset
             ) { updatedPreset in
                 viewModel.updatePreset(updatedPreset)
@@ -106,8 +106,8 @@ struct QuickAddView: View {
             QuickEntryReviewView(
                 presetTitle: reviewPresetTitle,
                 initialDraft: reviewDraft,
-                projects: viewModel.catalogStore.projects,
-                services: viewModel.catalogStore.services
+                projects: viewModel.preferredProjects(include: reviewDraft.projectID),
+                services: viewModel.preferredServices(include: reviewDraft.serviceID)
             ) { draft in
                 Task {
                     await viewModel.submitEntry(draft)

@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 @MainActor
 final class AppViewModel: ObservableObject {
@@ -15,6 +16,7 @@ final class AppViewModel: ObservableObject {
     let catalogStore: CatalogStore
 
     private let apiClient: MiteAPIClienting
+    private var cancellables: Set<AnyCancellable> = []
 
     init(
         configStore: ConfigurationStore = ConfigurationStore(),
@@ -28,6 +30,13 @@ final class AppViewModel: ObservableObject {
         self.apiClient = apiClient
         self.presetStore.load()
         self.catalogStore.load()
+
+        // Forward nested store updates so views observing AppViewModel repaint immediately.
+        configStore.objectWillChange
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
+            .store(in: &cancellables)
     }
 
     func saveConfiguration(accountSubdomain: String, apiKey: String) async {
@@ -141,6 +150,22 @@ final class AppViewModel: ObservableObject {
         return "Unknown service"
     }
 
+    func preferredProjects(include ensuredProjectID: Int? = nil) -> [MiteProject] {
+        applySelectionMode(
+            to: catalogStore.projects,
+            favorites: configStore.favoriteProjectIDs,
+            includeID: ensuredProjectID
+        )
+    }
+
+    func preferredServices(include ensuredServiceID: Int? = nil) -> [MiteService] {
+        applySelectionMode(
+            to: catalogStore.services,
+            favorites: configStore.favoriteServiceIDs,
+            includeID: ensuredServiceID
+        )
+    }
+
     func addPreset(_ preset: MitePreset) {
         clearMessages()
         do {
@@ -180,5 +205,30 @@ final class AppViewModel: ObservableObject {
     func clearMessages() {
         infoMessage = nil
         errorMessage = nil
+    }
+
+    private func applySelectionMode<T: Identifiable & Hashable>(
+        to entries: [T],
+        favorites: Set<T.ID>,
+        includeID: T.ID?
+    ) -> [T] {
+        let base: [T]
+        switch configStore.selectionDisplayMode {
+        case .allEntries:
+            base = entries
+        case .favoritesOnly:
+            base = entries.filter { favorites.contains($0.id) }
+        case .favoritesFirst:
+            let favEntries = entries.filter { favorites.contains($0.id) }
+            let nonFavEntries = entries.filter { !favorites.contains($0.id) }
+            base = favEntries + nonFavEntries
+        }
+
+        guard let includeID,
+              let ensuredEntry = entries.first(where: { $0.id == includeID }),
+              !base.contains(ensuredEntry) else {
+            return base
+        }
+        return base + [ensuredEntry]
     }
 }

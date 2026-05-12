@@ -16,6 +16,14 @@ struct QuickEntryReviewView: View {
     @State private var date: Date
     @State private var isWholeDay = false
 
+    private var selectableProjects: [MiteProject] {
+        viewModel.preferredProjects(include: selectedProjectID)
+    }
+
+    private var selectableServices: [MiteService] {
+        viewModel.preferredServices(include: selectedServiceID)
+    }
+
     init(
         presetTitle: String,
         initialDraft: TimeEntryDraft,
@@ -49,13 +57,13 @@ struct QuickEntryReviewView: View {
                 .foregroundStyle(.secondary)
 
             Picker("Project", selection: $selectedProjectID) {
-                ForEach(projects) { project in
+                ForEach(selectableProjects) { project in
                     Text(project.name).tag(Optional(project.id))
                 }
             }
 
             Picker("Service", selection: $selectedServiceID) {
-                ForEach(services) { service in
+                ForEach(selectableServices) { service in
                     Text(service.name).tag(Optional(service.id))
                 }
             }
