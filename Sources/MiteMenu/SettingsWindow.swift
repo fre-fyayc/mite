@@ -174,7 +174,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, @unc
         guard !isLoading else { return }
         window?.makeFirstResponder(nil)
         guard let account = FavoritesStore.normalizeAccount(accountField.stringValue) else {
-            setStatus("Enter the account subdomain, such as company from company.mite.de.", isError: true)
+            setStatus("Enter the account subdomain, such as your-account from your-account.mite.de.", isError: true)
             return
         }
         let typedKey = apiKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)

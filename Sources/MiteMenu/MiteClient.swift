@@ -30,7 +30,7 @@ enum MiteError: LocalizedError {
         case .missingCredentials:
             return "The API key could not be read from the Keychain. Open Connect, click Save connection, and choose Allow if macOS asks."
         case .invalidAccount:
-            return "Enter the account subdomain, such as company from company.mite.de."
+            return "Enter the account subdomain, such as your-account from your-account.mite.de."
         case let .requestFailed(status, message):
             if !message.isEmpty { return message }
             if status == 401 || status == 403 {
