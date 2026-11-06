@@ -15,6 +15,7 @@ enum KeychainError: LocalizedError {
 enum Keychain {
     private static let service = "mite-menu"
     private static let account = "api-key"
+    private static var cached: String?
 
     static func save(_ value: String) throws {
         let data = Data(value.utf8)
@@ -35,9 +36,11 @@ enum Keychain {
         guard status == errSecSuccess else {
             throw KeychainError.status(status)
         }
+        cached = value
     }
 
     static func load() -> String? {
+        if let cached, !cached.isEmpty { return cached }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -50,6 +53,7 @@ enum Keychain {
         guard status == errSecSuccess, let data = item as? Data else { return nil }
         let value = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let value, !value.isEmpty else { return nil }
+        cached = value
         return value
     }
 }

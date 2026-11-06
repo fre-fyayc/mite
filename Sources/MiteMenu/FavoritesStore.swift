@@ -9,18 +9,31 @@ struct FavoritePair: Codable, Equatable {
 struct AppConfig: Codable, Equatable {
     var account: String
     var pairs: [FavoritePair]
+    var roundUpMinutes: Int?
 
     static let empty = AppConfig(account: "", pairs: [])
 
-    init(account: String, pairs: [FavoritePair]) {
+    init(account: String, pairs: [FavoritePair], roundUpMinutes: Int? = nil) {
         self.account = account
         self.pairs = pairs
+        self.roundUpMinutes = roundUpMinutes
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         account = try container.decodeIfPresent(String.self, forKey: .account) ?? ""
         pairs = try container.decodeIfPresent([FavoritePair].self, forKey: .pairs) ?? []
+        roundUpMinutes = try container.decodeIfPresent(Int.self, forKey: .roundUpMinutes)
+    }
+}
+
+enum MinuteRounding {
+    static func ceil(since: Date, increment: Int, now: Date = Date()) -> Int {
+        guard increment > 0 else { return 0 }
+        let elapsed = now.timeIntervalSince(since)
+        guard elapsed > 0 else { return 0 }
+        let slots = (elapsed / Double(increment * 60)).rounded(.up)
+        return Int(slots) * increment
     }
 }
 
@@ -118,7 +131,7 @@ enum FavoritesStore {
     static func save(_ config: AppConfig) throws {
         let directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let object: [String: Any] = [
+        var object: [String: Any] = [
             "account": config.account,
             "pairs": config.pairs.map { pair -> [String: Any] in
                 [
@@ -128,6 +141,9 @@ enum FavoritesStore {
                 ]
             },
         ]
+        if let roundUpMinutes = config.roundUpMinutes, roundUpMinutes > 0 {
+            object["roundUpMinutes"] = roundUpMinutes
+        }
         var data = try JSONSerialization.data(
             withJSONObject: object,
             options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]

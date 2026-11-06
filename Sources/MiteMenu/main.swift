@@ -12,6 +12,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
     private var projects: [MiteProject] = []
     private var services: [MiteService] = []
     private var catalogLoaded = false
+    private var keyIsStored = false
     private var tracker: TrackerSnapshot?
     private var trackerEpoch = 0
     private var isBusy = false
@@ -32,8 +33,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         }
         statusItem.menu = menu
         updateStatusItem()
-        refreshCatalog()
-        refreshTracker()
+        DispatchQueue.main.async { [weak self] in
+            self?.warmCredentials(refreshTrackerIfNeeded: true)
+        }
         let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
             self?.refreshTracker()
         }
@@ -57,7 +59,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
             return
         }
 
-        let connected = !config.account.isEmpty && Keychain.load() != nil
+        let connected = !config.account.isEmpty && keyIsStored
         if let tracker {
             if !tracker.headline.isEmpty {
                 menu.addItem(disabled(tracker.headline))
@@ -65,7 +67,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
             if !tracker.note.isEmpty {
                 menu.addItem(disabled(tracker.note))
             }
-            let stop = NSMenuItem(title: "Stop", action: #selector(stopTimer), keyEquivalent: "")
+            let stop = NSMenuItem(
+                title: stopTitle(since: tracker.since, increment: config.roundUpMinutes),
+                action: #selector(stopTimer),
+                keyEquivalent: ""
+            )
             stop.target = self
             stop.isEnabled = !isBusy
             menu.addItem(stop)
@@ -90,6 +96,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         addFooter(connected: connected)
     }
 
+    private var roundingEnabled: Bool {
+        ((try? FavoritesStore.load())?.roundUpMinutes ?? 0) > 0
+    }
+
+    private var roundingTitle: String {
+        let increment = (try? FavoritesStore.load())?.roundUpMinutes ?? 0
+        let minutes = increment > 0 ? increment : 15
+        return "Round up to \(minutes) minutes"
+    }
+
+    private func stopTitle(since: Date, increment: Int?) -> String {
+        guard let increment, increment > 0 else { return "Stop" }
+        let minutes = MinuteRounding.ceil(since: since, increment: increment)
+        guard minutes > 0 else { return "Stop" }
+        return "Stop · \(minutes) min"
+    }
+
     private func addFooter(connected: Bool) {
         let connect = NSMenuItem(
             title: connected ? "Add pair…" : "Connect…",
@@ -102,6 +125,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         let open = NSMenuItem(title: "Open config", action: #selector(openConfig), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
+
+        let rounding = NSMenuItem(title: roundingTitle, action: #selector(toggleRoundUp), keyEquivalent: "")
+        rounding.target = self
+        rounding.state = roundingEnabled ? .on : .off
+        menu.addItem(rounding)
 
         let quit = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
@@ -127,6 +155,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
     }
 
     @objc private func showSettings() {
+        DispatchQueue.main.async { [weak self] in
+            self?.presentSettings()
+        }
+    }
+
+    private func presentSettings() {
+        if !keyIsStored || !catalogLoaded {
+            warmCredentials(refreshTrackerIfNeeded: false)
+        }
         if settings == nil {
             let controller = SettingsWindowController()
             controller.onCatalogUpdated = { [weak self] projects, services in
@@ -146,12 +183,36 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         }
     }
 
+    @objc private func toggleRoundUp() {
+        do {
+            var config = try FavoritesStore.load()
+            if let current = config.roundUpMinutes, current > 0 {
+                config.roundUpMinutes = nil
+            } else {
+                config.roundUpMinutes = 15
+            }
+            try FavoritesStore.save(config)
+        } catch {
+            presentError(error)
+        }
+    }
+
     @objc private func quit() {
         NSApp.terminate(nil)
     }
 
     @objc private func startPair(_ sender: NSMenuItem) {
         guard !isBusy, let box = sender.representedObject as? PairBox else { return }
+        let pair = box.pair
+        DispatchQueue.main.async { [weak self] in
+            self?.startSavedPair(pair)
+        }
+    }
+
+    private func startSavedPair(_ pair: FavoritePair) {
+        guard !isBusy else { return }
+        activateApp()
+        keyIsStored = Keychain.load() != nil
         let client: MiteClient
         do {
             client = try MiteClient.make()
@@ -159,11 +220,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
             presentError(error)
             return
         }
-        guard let note = NotePrompt.ask(title: menuTitle(for: box.pair)) else { return }
-        let pair = box.pair
+        guard let note = NotePrompt.ask(title: menuTitle(for: pair)) else { return }
+        let running = tracker
+        let increment = (try? FavoritesStore.load())?.roundUpMinutes
         beginTrackingChange()
         Task {
             do {
+                if let running, let increment, increment > 0 {
+                    try await client.stop(entryId: running.entryId, roundUpTo: increment, since: running.since)
+                }
                 let snapshot = try await client.start(
                     projectId: pair.projectId,
                     serviceId: pair.serviceId,
@@ -187,7 +252,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
     }
 
     @objc private func stopTimer() {
-        guard !isBusy, let entryId = tracker?.entryId else { return }
+        guard !isBusy, let running = tracker else { return }
         let client: MiteClient
         do {
             client = try MiteClient.make()
@@ -195,10 +260,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
             presentError(error)
             return
         }
+        let increment = (try? FavoritesStore.load())?.roundUpMinutes
         beginTrackingChange()
         Task {
             do {
-                try await client.stop(entryId: entryId)
+                try await client.stop(entryId: running.entryId, roundUpTo: increment, since: running.since)
                 DispatchQueue.main.async {
                     self.tracker = nil
                     self.isBusy = false
@@ -212,6 +278,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
                     self.refreshTracker()
                 }
             }
+        }
+    }
+
+    private func warmCredentials(refreshTrackerIfNeeded: Bool) {
+        activateApp()
+        keyIsStored = Keychain.load() != nil
+        guard keyIsStored else { return }
+        if !catalogLoaded {
+            refreshCatalog()
+        }
+        if refreshTrackerIfNeeded {
+            refreshTracker()
         }
     }
 

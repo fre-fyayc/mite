@@ -22,12 +22,13 @@ enum MiteError: LocalizedError {
     case missingCredentials
     case invalidAccount
     case requestFailed(Int, String)
+    case savedWithoutRounding(Int, String)
     case unreadableResponse
 
     var errorDescription: String? {
         switch self {
         case .missingCredentials:
-            return "Add your mite account and API key with Connect."
+            return "The API key could not be read from the Keychain. Open Connect, click Save connection, and choose Allow if macOS asks."
         case .invalidAccount:
             return "Enter the account subdomain, such as company from company.mite.de."
         case let .requestFailed(status, message):
@@ -36,6 +37,11 @@ enum MiteError: LocalizedError {
                 return "mite refused the API key. Check the account name and the key."
             }
             return "mite returned HTTP \(status)."
+        case let .savedWithoutRounding(minutes, message):
+            if message.isEmpty {
+                return "The timer stopped, but mite did not save \(minutes) minutes."
+            }
+            return "The timer stopped, but mite did not save \(minutes) minutes. \(message)"
         case .unreadableResponse:
             return "mite returned a response the app could not read."
         }
@@ -119,8 +125,17 @@ struct MiteClient {
         }
     }
 
-    func stop(entryId: Int) async throws {
+    func stop(entryId: Int, roundUpTo increment: Int?, since: Date) async throws {
         _ = try await request(method: "DELETE", path: "/tracker/\(entryId).json")
+        guard let increment, increment > 0 else { return }
+        let minutes = MinuteRounding.ceil(since: since, increment: increment)
+        guard minutes > 0 else { return }
+        do {
+            try await updateMinutes(entryId: entryId, minutes: minutes)
+        } catch {
+            let detail = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            throw MiteError.savedWithoutRounding(minutes, detail)
+        }
     }
 
     private func createTimeEntry(projectId: Int, serviceId: Int, note: String) async throws -> TimeEntryBody {
@@ -143,6 +158,12 @@ struct MiteClient {
             return parseSince(running.since, minutes: running.minutes)
         }
         return Date()
+    }
+
+    private func updateMinutes(entryId: Int, minutes: Int) async throws {
+        let payload = MinutesPayload(timeEntry: MinutesWrite(minutes: minutes))
+        let body = try Self.encoder.encode(payload)
+        _ = try await request(method: "PATCH", path: "/time_entries/\(entryId).json", body: body)
     }
 
     private func deleteTimeEntry(id: Int) async throws {
@@ -292,4 +313,12 @@ private struct TimeEntryWrite: Encodable {
     let note: String
     let projectId: Int
     let serviceId: Int
+}
+
+private struct MinutesPayload: Encodable {
+    let timeEntry: MinutesWrite
+}
+
+private struct MinutesWrite: Encodable {
+    let minutes: Int
 }
