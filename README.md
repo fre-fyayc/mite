@@ -2,17 +2,23 @@
 
 A small macOS menu-bar timer for [mite](https://mite.de). It replaces the part of mite.nano that does not fit this workflow: a short list of customer-or-project plus service pairs, then a ticket or note, then the timer starts.
 
-Version 0.2.
+Version 0.3.
+
+## What's new in 0.3
+
+**Pause, finish, and resume.** Pause stops the clock and keeps the minutes already tracked. Finish is what rounds the time up, and it rounds the whole entry, including earlier runs of the same task. **Today** lists those entries. Choose one to continue it, with the same note. Starting another pair, or resuming a different entry, also leaves the previous minutes unrounded.
 
 ## What's new in 0.2
 
-**Round up to 15 minutes.** Stop saves the next full block instead of the exact elapsed time. One second through 15:00 becomes 15 minutes, and 15:01 becomes 30. The menu bar still shows the real elapsed time. **Stop · 30 min** is the amount written to mite. Starting another pair rounds the running entry before the new one starts. The menu switch turns this on and off.
+**Round up to 15 minutes.** Stop saved the next full block instead of the exact elapsed time. One second through 15:00 became 15 minutes, and 15:01 became 30. The menu bar still showed the real elapsed time. In 0.2, stopping or starting another pair wrote that rounded block. Version 0.3 keeps the rounding for Finish only.
 
 ## What you can do
 
-Click the timer icon in the menu bar and pick a saved pair, such as **Customer — Service**. Type a ticket id or a short note. Return starts the timer in your mite account. The icon shows the elapsed time. **Stop** ends it. Starting another pair stops the one that is already running.
+Click the timer icon in the menu bar and pick a saved pair, such as **Customer — Service**. Type a ticket id or a short note. Return starts the timer in your mite account. The icon shows how long this run has lasted.
 
-**Round up to 15 minutes** is a menu switch. When it is on, Stop saves the next full block: 1 second through 15:00 becomes 15 minutes, and 15:01 becomes 30. The menu bar still shows the real elapsed time. **Stop · 30 min** is the amount that will be written to mite. Starting another pair rounds the running entry the same way before the new one starts.
+**Pause** stops the run and leaves the minutes mite has counted. The entry stays under **Today**. Choose it to continue the same note and the same project. A coffee break does not add a full block. Starting another pair, or another entry from today, pauses the running one the same way.
+
+**Round up to 15 minutes** is a menu switch. When it is on, **Finish · 30 min** is the block written when the task is done. One second through 15:00 becomes 15 minutes, and 15:01 becomes 30. That total includes time already saved on the entry. The menu bar still shows only the current run. When the switch is off, **Stop** saves the exact minutes.
 
 Pairs are not chosen in two steps. Each menu row is one project and one service. The same project can be saved again with a different service.
 

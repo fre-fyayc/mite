@@ -5,6 +5,11 @@ final class PairBox: NSObject {
     init(_ pair: FavoritePair) { self.pair = pair }
 }
 
+final class EntryBox: NSObject {
+    let entry: TodayEntry
+    init(_ entry: TodayEntry) { self.entry = entry }
+}
+
 final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unchecked Sendable {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
@@ -15,6 +20,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
     private var keyIsStored = false
     private var tracker: TrackerSnapshot?
     private var trackerEpoch = 0
+    private var todayEntries: [TodayEntry] = []
+    private var todayLoaded = false
+    private var todayError: String?
+    private var todayEpoch = 0
     private var isBusy = false
     private var tick: Timer?
     private var poll: Timer?
@@ -45,6 +54,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
 
     func menuWillOpen(_ menu: NSMenu) {
         rebuildMenu()
+        refreshToday()
     }
 
     private func rebuildMenu() {
@@ -67,14 +77,15 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
             if !tracker.note.isEmpty {
                 menu.addItem(disabled(tracker.note))
             }
-            let stop = NSMenuItem(
-                title: stopTitle(since: tracker.since, increment: config.roundUpMinutes),
-                action: #selector(stopTimer),
-                keyEquivalent: ""
-            )
-            stop.target = self
-            stop.isEnabled = !isBusy
-            menu.addItem(stop)
+            if tracker.minutesAlready > 0 {
+                menu.addItem(disabled("\(tracker.minutesAlready) min already saved"))
+            }
+            if let increment = config.roundUpMinutes, increment > 0 {
+                menu.addItem(action("Pause", #selector(pauseTimer)))
+                menu.addItem(action(finishTitle(for: tracker, increment: increment), #selector(finishTimer)))
+            } else {
+                menu.addItem(action("Stop", #selector(pauseTimer)))
+            }
             menu.addItem(.separator())
         }
 
@@ -92,8 +103,40 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
             }
         }
 
+        if connected {
+            menu.addItem(.separator())
+            addToday(except: tracker?.entryId)
+        }
+
         menu.addItem(.separator())
         addFooter(connected: connected)
+    }
+
+    private func addToday(except runningId: Int?) {
+        menu.addItem(disabled("Today"))
+        guard todayLoaded else {
+            menu.addItem(disabled(todayError ?? "Loading today…"))
+            return
+        }
+        let rows = todayEntries.filter { $0.id != runningId }
+        if rows.isEmpty {
+            menu.addItem(disabled(runningId == nil ? "Nothing tracked today" : "Nothing else today"))
+            return
+        }
+        for entry in rows {
+            let item = NSMenuItem(title: todayTitle(for: entry), action: #selector(resumeEntry(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = EntryBox(entry)
+            item.isEnabled = !isBusy && !entry.locked
+            menu.addItem(item)
+        }
+    }
+
+    private func action(_ title: String, _ selector: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
+        item.target = self
+        item.isEnabled = !isBusy
+        return item
     }
 
     private var roundingEnabled: Bool {
@@ -106,11 +149,23 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         return "Round up to \(minutes) minutes"
     }
 
-    private func stopTitle(since: Date, increment: Int?) -> String {
-        guard let increment, increment > 0 else { return "Stop" }
-        let minutes = MinuteRounding.ceil(since: since, increment: increment)
-        guard minutes > 0 else { return "Stop" }
-        return "Stop · \(minutes) min"
+    private func finishTitle(for tracker: TrackerSnapshot, increment: Int) -> String {
+        let minutes = MinuteRounding.ceil(already: tracker.minutesAlready, since: tracker.since, increment: increment)
+        guard minutes > 0 else { return "Finish" }
+        return "Finish · \(minutes) min"
+    }
+
+    private func todayTitle(for entry: TodayEntry) -> String {
+        let name = entry.headline.isEmpty ? "Untitled" : entry.headline
+        let note = clipped(entry.note, limit: 42)
+        let time = "\(entry.minutes) min"
+        let title = note.isEmpty ? "\(name) · \(time)" : "\(name) · \(note) · \(time)"
+        return entry.locked ? "\(title) (locked)" : title
+    }
+
+    private func clipped(_ text: String, limit: Int) -> String {
+        guard text.count > limit else { return text }
+        return String(text.prefix(limit - 1)) + "…"
     }
 
     private func addFooter(connected: Bool) {
@@ -212,72 +267,118 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
     private func startSavedPair(_ pair: FavoritePair) {
         guard !isBusy else { return }
         activateApp()
-        keyIsStored = Keychain.load() != nil
-        let client: MiteClient
-        do {
-            client = try MiteClient.make()
-        } catch {
-            presentError(error)
-            return
-        }
+        guard let client = makeClient() else { return }
         guard let note = NotePrompt.ask(title: menuTitle(for: pair)) else { return }
-        let running = tracker
-        let increment = (try? FavoritesStore.load())?.roundUpMinutes
         beginTrackingChange()
         Task {
             do {
-                if let running, let increment, increment > 0 {
-                    try await client.stop(entryId: running.entryId, roundUpTo: increment, since: running.since)
-                }
                 let snapshot = try await client.start(
                     projectId: pair.projectId,
                     serviceId: pair.serviceId,
                     note: note,
                     headline: self.menuTitle(for: pair)
                 )
+                let today = try? await client.today()
                 DispatchQueue.main.async {
+                    if let today { self.applyToday(today) }
                     self.tracker = snapshot
                     self.isBusy = false
                     self.updateStatusItem()
                 }
             } catch {
-                DispatchQueue.main.async {
-                    self.isBusy = false
-                    self.updateStatusItem()
-                    self.presentError(error)
-                    self.refreshTracker()
-                }
+                self.failTracking(error)
             }
         }
     }
 
-    @objc private func stopTimer() {
-        guard !isBusy, let running = tracker else { return }
-        let client: MiteClient
-        do {
-            client = try MiteClient.make()
-        } catch {
-            presentError(error)
-            return
-        }
-        let increment = (try? FavoritesStore.load())?.roundUpMinutes
+    @objc private func resumeEntry(_ sender: NSMenuItem) {
+        guard !isBusy, let box = sender.representedObject as? EntryBox else { return }
+        let entry = box.entry
+        guard let client = makeClient() else { return }
         beginTrackingChange()
         Task {
             do {
-                try await client.stop(entryId: running.entryId, roundUpTo: increment, since: running.since)
+                let snapshot = try await client.resume(entry)
+                let today = try? await client.today()
                 DispatchQueue.main.async {
+                    if let today { self.applyToday(today) }
+                    self.tracker = snapshot
+                    self.isBusy = false
+                    self.updateStatusItem()
+                }
+            } catch {
+                self.failTracking(error)
+            }
+        }
+    }
+
+    @objc private func pauseTimer() {
+        guard !isBusy, let running = tracker else { return }
+        guard let client = makeClient() else { return }
+        beginTrackingChange()
+        Task {
+            do {
+                try await client.pause(entryId: running.entryId)
+                let today = try? await client.today()
+                DispatchQueue.main.async {
+                    if let today { self.applyToday(today) }
                     self.tracker = nil
                     self.isBusy = false
                     self.updateStatusItem()
                 }
             } catch {
+                self.failTracking(error)
+            }
+        }
+    }
+
+    @objc private func finishTimer() {
+        guard !isBusy, let running = tracker else { return }
+        guard let client = makeClient() else { return }
+        let increment = (try? FavoritesStore.load())?.roundUpMinutes ?? 0
+        beginTrackingChange()
+        Task {
+            do {
+                if increment > 0 {
+                    try await client.finish(
+                        entryId: running.entryId,
+                        minutesAlready: running.minutesAlready,
+                        since: running.since,
+                        roundUpTo: increment
+                    )
+                } else {
+                    try await client.pause(entryId: running.entryId)
+                }
+                let today = try? await client.today()
                 DispatchQueue.main.async {
+                    if let today { self.applyToday(today) }
+                    self.tracker = nil
                     self.isBusy = false
                     self.updateStatusItem()
-                    self.presentError(error)
-                    self.refreshTracker()
                 }
+            } catch {
+                self.failTracking(error)
             }
+        }
+    }
+
+    private func makeClient() -> MiteClient? {
+        keyIsStored = Keychain.load() != nil
+        do {
+            return try MiteClient.make()
+        } catch {
+            presentError(error)
+            return nil
+        }
+    }
+
+    private func failTracking(_ error: Error) {
+        DispatchQueue.main.async {
+            self.isBusy = false
+            self.updateStatusItem()
+            self.presentError(error)
+            self.refreshTracker()
+            self.refreshToday()
         }
     }
 
@@ -291,6 +392,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         if refreshTrackerIfNeeded {
             refreshTracker()
         }
+        refreshToday()
     }
 
     private func refreshCatalog() {
@@ -319,6 +421,42 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         self.services = services
         catalogLoaded = true
         settings?.updateCatalog(projects: projects, services: services)
+    }
+
+    private func refreshToday() {
+        guard keyIsStored else { return }
+        todayEpoch += 1
+        let epoch = todayEpoch
+        let client: MiteClient
+        do {
+            client = try MiteClient.make()
+        } catch {
+            return
+        }
+        Task {
+            do {
+                let entries = try await client.today()
+                DispatchQueue.main.async {
+                    guard epoch == self.todayEpoch else { return }
+                    self.applyToday(entries)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    guard epoch == self.todayEpoch else { return }
+                    if self.todayEntries.isEmpty {
+                        self.todayLoaded = false
+                        self.todayError = "Today's entries could not be loaded"
+                    }
+                }
+            }
+        }
+    }
+
+    private func applyToday(_ entries: [TodayEntry]) {
+        todayEpoch += 1
+        todayEntries = entries
+        todayLoaded = true
+        todayError = nil
     }
 
     private func beginTrackingChange() {
@@ -364,8 +502,11 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
             return
         }
         button.title = " " + formatElapsed(since: tracker.since)
-        let detail = [tracker.headline, tracker.note].filter { !$0.isEmpty }.joined(separator: "\n")
-        button.toolTip = detail.isEmpty ? "mite" : detail
+        var lines = [tracker.headline, tracker.note].filter { !$0.isEmpty }
+        if tracker.minutesAlready > 0 {
+            lines.append("\(tracker.minutesAlready) min already saved")
+        }
+        button.toolTip = lines.isEmpty ? "mite" : lines.joined(separator: "\n")
         guard tick == nil else { return }
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             self?.updateStatusItem()

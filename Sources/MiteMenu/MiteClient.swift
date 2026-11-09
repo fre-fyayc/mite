@@ -14,8 +14,18 @@ struct MiteService: Decodable, Equatable {
 struct TrackerSnapshot: Equatable {
     let entryId: Int
     let since: Date
+    /// Minutes stored on this entry before the current run. Finish adds the current run on top of this.
+    let minutesAlready: Int
     let headline: String
     let note: String
+}
+
+struct TodayEntry: Equatable {
+    let id: Int
+    let minutes: Int
+    let note: String
+    let headline: String
+    let locked: Bool
 }
 
 enum MiteError: LocalizedError {
@@ -97,9 +107,12 @@ struct MiteClient {
         let envelope = try decode(TrackerEnvelope.self, from: data)
         guard let running = envelope.tracker.trackingTimeEntry else { return nil }
         let details = try? await timeEntry(id: running.id)
+        let since = parseSince(running.since ?? details?.tracking?.since, minutes: running.minutes)
+        let reported = details?.tracking?.minutes ?? running.minutes ?? 0
         return TrackerSnapshot(
             entryId: running.id,
-            since: parseSince(running.since, minutes: running.minutes),
+            since: since,
+            minutesAlready: minutesAlready(reported: reported, stored: details?.minutes, since: since),
             headline: headline(
                 customer: details?.customerName,
                 project: details?.projectName,
@@ -109,6 +122,29 @@ struct MiteClient {
         )
     }
 
+    func today() async throws -> [TodayEntry] {
+        let data = try await request(method: "GET", path: "/daily.json")
+        let entries = try decode([TimeEntryBox].self, from: data).map(\.timeEntry)
+        return entries.sorted { lhs, rhs in
+            let left = parseISO(lhs.updatedAt) ?? .distantPast
+            let right = parseISO(rhs.updatedAt) ?? .distantPast
+            if left != right { return left > right }
+            return lhs.id > rhs.id
+        }.map { entry in
+            TodayEntry(
+                id: entry.id,
+                minutes: max(0, entry.minutes ?? 0),
+                note: entry.note?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                headline: headline(
+                    customer: entry.customerName,
+                    project: entry.projectName,
+                    service: entry.serviceName
+                ),
+                locked: entry.locked ?? false
+            )
+        }
+    }
+
     func start(projectId: Int, serviceId: Int, note: String, headline: String) async throws -> TrackerSnapshot {
         let created = try await createTimeEntry(projectId: projectId, serviceId: serviceId, note: note)
         do {
@@ -116,6 +152,7 @@ struct MiteClient {
             return TrackerSnapshot(
                 entryId: created.id,
                 since: since,
+                minutesAlready: max(0, created.minutes ?? 0),
                 headline: headline,
                 note: note
             )
@@ -125,10 +162,31 @@ struct MiteClient {
         }
     }
 
-    func stop(entryId: Int, roundUpTo increment: Int?, since: Date) async throws {
-        _ = try await request(method: "DELETE", path: "/tracker/\(entryId).json")
-        guard let increment, increment > 0 else { return }
-        let minutes = MinuteRounding.ceil(since: since, increment: increment)
+    func resume(_ entry: TodayEntry) async throws -> TrackerSnapshot {
+        let since = try await startTracker(id: entry.id)
+        return TrackerSnapshot(
+            entryId: entry.id,
+            since: since,
+            minutesAlready: max(0, entry.minutes),
+            headline: entry.headline,
+            note: entry.note
+        )
+    }
+
+    /// Stops the clock and leaves the minutes mite stored for this run.
+    func pause(entryId: Int) async throws {
+        _ = try await stopTracker(entryId: entryId)
+    }
+
+    /// Stops the clock and saves the next full block for the whole entry, including earlier runs.
+    func finish(entryId: Int, minutesAlready: Int, since: Date, roundUpTo increment: Int) async throws {
+        guard increment > 0 else {
+            try await pause(entryId: entryId)
+            return
+        }
+        let tracked = MinuteRounding.ceil(already: minutesAlready, since: since, increment: increment)
+        let stopped = try await stopTracker(entryId: entryId)
+        let minutes = max(tracked, MinuteRounding.ceil(minutes: stopped, increment: increment))
         guard minutes > 0 else { return }
         do {
             try await updateMinutes(entryId: entryId, minutes: minutes)
@@ -160,6 +218,21 @@ struct MiteClient {
         return Date()
     }
 
+    private func stopTracker(entryId: Int) async throws -> Int {
+        let data = try await request(method: "DELETE", path: "/tracker/\(entryId).json")
+        let envelope = try? Self.decoder.decode(TrackerEnvelope.self, from: data)
+        return max(0, envelope?.tracker.stoppedTimeEntry?.minutes ?? 0)
+    }
+
+    /// Minutes saved before this run. mite's live total already includes the current run, so those whole minutes are removed.
+    private func minutesAlready(reported: Int, stored: Int?, since: Date) -> Int {
+        if let stored, stored < reported {
+            return max(0, stored)
+        }
+        let elapsedMinutes = Int((max(0, Date().timeIntervalSince(since)) / 60).rounded(.down))
+        return max(0, reported - elapsedMinutes)
+    }
+
     private func updateMinutes(entryId: Int, minutes: Int) async throws {
         let payload = MinutesPayload(timeEntry: MinutesWrite(minutes: minutes))
         let body = try Self.encoder.encode(payload)
@@ -184,7 +257,7 @@ struct MiteClient {
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue(apiKey, forHTTPHeaderField: "X-MiteApiKey")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("mite-menu/1.0 (macOS menu bar)", forHTTPHeaderField: "User-Agent")
+        request.setValue("mite-menu/0.3 (macOS menu bar)", forHTTPHeaderField: "User-Agent")
         if let body {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -235,17 +308,20 @@ struct MiteClient {
     }
 
     private func parseSince(_ value: String?, minutes: Int?) -> Date {
-        if let value {
-            if let date = try? Date(value, strategy: .iso8601) {
-                return date
-            }
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            if let date = formatter.date(from: value) {
-                return date
-            }
+        if let date = parseISO(value) {
+            return date
         }
         return Date().addingTimeInterval(-Double(minutes ?? 0) * 60)
+    }
+
+    private func parseISO(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        if let date = try? Date(value, strategy: .iso8601) {
+            return date
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.date(from: value)
     }
 
     private func headline(customer: String?, project: String?, service: String?) -> String {
@@ -286,9 +362,14 @@ private struct TrackerEnvelope: Decodable {
         }
 
         let trackingTimeEntry: Entry?
+        let stoppedTimeEntry: Entry?
     }
 
     let tracker: Tracker
+}
+
+private struct TimeEntryBox: Decodable {
+    let timeEntry: TimeEntryBody
 }
 
 private struct TimeEntryEnvelope: Decodable {
@@ -296,11 +377,20 @@ private struct TimeEntryEnvelope: Decodable {
 }
 
 private struct TimeEntryBody: Decodable {
+    struct Tracking: Decodable {
+        let since: String?
+        let minutes: Int?
+    }
+
     let id: Int
+    let minutes: Int?
     let note: String?
     let projectName: String?
     let customerName: String?
     let serviceName: String?
+    let locked: Bool?
+    let updatedAt: String?
+    let tracking: Tracking?
 }
 
 private struct TimeEntryPayload: Encodable {

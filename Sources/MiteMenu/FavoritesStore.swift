@@ -28,11 +28,20 @@ struct AppConfig: Codable, Equatable {
 }
 
 enum MinuteRounding {
-    static func ceil(since: Date, increment: Int, now: Date = Date()) -> Int {
-        guard increment > 0 else { return 0 }
-        let elapsed = now.timeIntervalSince(since)
-        guard elapsed > 0 else { return 0 }
-        let slots = (elapsed / Double(increment * 60)).rounded(.up)
+    /// Next full block for one entry. `already` is the minutes saved before this run. `since` is when this run started.
+    static func ceil(already: Int, since: Date, increment: Int, now: Date = Date()) -> Int {
+        guard increment > 0 else { return max(0, already) }
+        let total = Double(max(0, already)) * 60 + max(0, now.timeIntervalSince(since))
+        guard total > 0 else { return 0 }
+        let slots = (total / Double(increment * 60)).rounded(.up)
+        return Int(slots) * increment
+    }
+
+    /// Next full block for a minute total mite has already stored. An exact multiple stays as it is.
+    static func ceil(minutes: Int, increment: Int) -> Int {
+        guard increment > 0 else { return max(0, minutes) }
+        guard minutes > 0 else { return 0 }
+        let slots = (Double(minutes) / Double(increment)).rounded(.up)
         return Int(slots) * increment
     }
 }
