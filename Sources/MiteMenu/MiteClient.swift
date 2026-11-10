@@ -26,6 +26,8 @@ struct TodayEntry: Equatable {
     let note: String
     let headline: String
     let locked: Bool
+    var projectId: Int? = nil
+    var serviceId: Int? = nil
 }
 
 enum MiteError: LocalizedError {
@@ -124,25 +126,22 @@ struct MiteClient {
 
     func today() async throws -> [TodayEntry] {
         let data = try await request(method: "GET", path: "/daily.json")
-        let entries = try decode([TimeEntryBox].self, from: data).map(\.timeEntry)
-        return entries.sorted { lhs, rhs in
-            let left = parseISO(lhs.updatedAt) ?? .distantPast
-            let right = parseISO(rhs.updatedAt) ?? .distantPast
-            if left != right { return left > right }
-            return lhs.id > rhs.id
-        }.map { entry in
-            TodayEntry(
-                id: entry.id,
-                minutes: max(0, entry.minutes ?? 0),
-                note: entry.note?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-                headline: headline(
-                    customer: entry.customerName,
-                    project: entry.projectName,
-                    service: entry.serviceName
-                ),
-                locked: entry.locked ?? false
-            )
-        }
+        return try mapEntries(data)
+    }
+
+    func entries(on day: String) async throws -> [TodayEntry] {
+        let data = try await request(method: "GET", path: "/time_entries.json?user_id=current&at=\(day)")
+        return try mapEntries(data)
+    }
+
+    /// Writes an exact minute total onto one pair for one day. Does not start the tracker and does not round.
+    func addSettledTime(projectId: Int, serviceId: Int, minutes: Int, note: String, day: String) async throws {
+        _ = try await createTimeEntry(projectId: projectId, serviceId: serviceId, note: note, minutes: minutes, day: day)
+    }
+
+    /// Replaces the stored minutes on an entry. Does not round.
+    func saveMinutes(entryId: Int, minutes: Int) async throws {
+        try await updateMinutes(entryId: entryId, minutes: minutes)
     }
 
     func start(projectId: Int, serviceId: Int, note: String, headline: String) async throws -> TrackerSnapshot {
@@ -196,10 +195,40 @@ struct MiteClient {
         }
     }
 
-    private func createTimeEntry(projectId: Int, serviceId: Int, note: String) async throws -> TimeEntryBody {
+    private func mapEntries(_ data: Data) throws -> [TodayEntry] {
+        let entries = try decode([TimeEntryBox].self, from: data).map(\.timeEntry)
+        return entries.sorted { lhs, rhs in
+            let left = parseISO(lhs.updatedAt) ?? .distantPast
+            let right = parseISO(rhs.updatedAt) ?? .distantPast
+            if left != right { return left > right }
+            return lhs.id > rhs.id
+        }.map { entry in
+            TodayEntry(
+                id: entry.id,
+                minutes: max(0, entry.minutes ?? 0),
+                note: entry.note?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                headline: headline(
+                    customer: entry.customerName,
+                    project: entry.projectName,
+                    service: entry.serviceName
+                ),
+                locked: entry.locked ?? false,
+                projectId: entry.projectId,
+                serviceId: entry.serviceId
+            )
+        }
+    }
+
+    private func createTimeEntry(
+        projectId: Int,
+        serviceId: Int,
+        note: String,
+        minutes: Int = 0,
+        day: String? = nil
+    ) async throws -> TimeEntryBody {
         let payload = TimeEntryPayload(timeEntry: TimeEntryWrite(
-            dateAt: Self.todayString(),
-            minutes: 0,
+            dateAt: day ?? Self.todayString(),
+            minutes: minutes,
             note: note,
             projectId: projectId,
             serviceId: serviceId
@@ -257,7 +286,7 @@ struct MiteClient {
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue(apiKey, forHTTPHeaderField: "X-MiteApiKey")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        request.setValue("mite-menu/0.3 (macOS menu bar)", forHTTPHeaderField: "User-Agent")
+        request.setValue("mite-menu/0.4 (macOS menu bar)", forHTTPHeaderField: "User-Agent")
         if let body {
             request.httpBody = body
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -385,8 +414,10 @@ private struct TimeEntryBody: Decodable {
     let id: Int
     let minutes: Int?
     let note: String?
+    let projectId: Int?
     let projectName: String?
     let customerName: String?
+    let serviceId: Int?
     let serviceName: String?
     let locked: Bool?
     let updatedAt: String?

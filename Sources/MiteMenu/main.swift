@@ -24,6 +24,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
     private var todayLoaded = false
     private var todayError: String?
     private var todayEpoch = 0
+    private var workday: Workday?
+    private var pastDay: String?
+    private var pastEntries: [TodayEntry] = []
+    private var pastLoaded = false
+    private var pastError: String?
+    private var pastEpoch = 0
     private var isBusy = false
     private var tick: Timer?
     private var poll: Timer?
@@ -41,20 +47,33 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
             button.toolTip = "mite"
         }
         statusItem.menu = menu
+        workday = WorkdayStore.load()
         updateStatusItem()
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.willPowerOffNotification] {
+            NSWorkspace.shared.notificationCenter.addObserver(
+                self,
+                selector: #selector(systemWillSleep(_:)),
+                name: name,
+                object: nil
+            )
+        }
         DispatchQueue.main.async { [weak self] in
             self?.warmCredentials(refreshTrackerIfNeeded: true)
         }
         let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
+            self?.normalizeWorkdayClock()
             self?.refreshTracker()
+            self?.updateStatusItem()
         }
         RunLoop.main.add(timer, forMode: .common)
         poll = timer
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        normalizeWorkdayClock()
         rebuildMenu()
         refreshToday()
+        refreshPastEntries()
     }
 
     private func rebuildMenu() {
@@ -70,6 +89,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         }
 
         let connected = !config.account.isEmpty && keyIsStored
+        addWorkday(config: config, connected: connected)
         if let tracker {
             if !tracker.headline.isEmpty {
                 menu.addItem(disabled(tracker.headline))
@@ -110,6 +130,79 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
 
         menu.addItem(.separator())
         addFooter(connected: connected)
+    }
+
+    private func addWorkday(config: AppConfig, connected: Bool) {
+        let now = Date()
+        menu.addItem(disabled(workdayHeader(config: config, now: now)))
+        if let workday, WorkdayMath.isPast(workday, now: now) {
+            menu.addItem(action("Start working time", #selector(startWorkday)))
+        } else {
+            switch workday?.phase {
+            case .running:
+                menu.addItem(action("Pause working time", #selector(pauseWorkday)))
+                menu.addItem(action("Stop working time", #selector(stopWorkday)))
+            case .paused:
+                menu.addItem(action("Resume working time", #selector(startWorkday)))
+                menu.addItem(action("Stop working time", #selector(stopWorkday)))
+            case .stopped:
+                menu.addItem(action("Resume working time", #selector(startWorkday)))
+            case nil:
+                menu.addItem(action("Start working time", #selector(startWorkday)))
+            }
+        }
+        addDifference(config: config, connected: connected, now: now)
+        menu.addItem(.separator())
+    }
+
+    private func workdayHeader(config: AppConfig, now: Date) -> String {
+        guard let workday else { return "Working time" }
+        var clock = formatDuration(workday.elapsed(at: now))
+        if let standard = config.standardMinutes, standard > 0 {
+            clock += " of \(WorkdayMath.formatTarget(standard))"
+        }
+        var parts = ["Working time"]
+        if let phrase = WorkdayMath.dayPhrase(for: workday.day, now: now) {
+            parts.append(phrase)
+        }
+        parts.append(clock)
+        switch workday.phase {
+        case .paused where !WorkdayMath.isPast(workday, now: now):
+            parts.append("paused")
+        case .stopped:
+            parts.append("stopped")
+        case .running, .paused:
+            break
+        }
+        if WorkdayMath.isOvertime(elapsed: workday.elapsed(at: now), standardMinutes: config.standardMinutes) {
+            parts.append("overtime")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func addDifference(config: AppConfig, connected: Bool, now: Date) {
+        guard let workday, connected else { return }
+        // Less than a minute cannot produce a difference, so there is nothing to load yet.
+        guard workday.elapsed(at: now) >= 60 else { return }
+        guard differenceIsLoaded(now: now) else {
+            let title = differenceError(now: now) == nil
+                ? "Loading the difference…"
+                : "The difference could not be loaded"
+            menu.addItem(disabled(title))
+            return
+        }
+        let gap = currentGapMinutes(now: now)
+        guard gap > 0 else { return }
+        guard let pair = config.differencePair else {
+            menu.addItem(action("Choose a pair for the difference…", #selector(showSettings)))
+            return
+        }
+        let title = "Add \(gap) min to \(menuTitle(for: pair))"
+        guard isPairAvailable(pair) else {
+            menu.addItem(disabled("\(title) (unavailable)"))
+            return
+        }
+        menu.addItem(action(title, #selector(bookDifference)))
     }
 
     private func addToday(except runningId: Int?) {
@@ -180,6 +273,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         let open = NSMenuItem(title: "Open config", action: #selector(openConfig), keyEquivalent: "")
         open.target = self
         menu.addItem(open)
+
+        let hours = NSMenuItem(title: "Daily hours…", action: #selector(showSettings), keyEquivalent: "")
+        hours.target = self
+        menu.addItem(hours)
 
         let rounding = NSMenuItem(title: roundingTitle, action: #selector(toggleRoundUp), keyEquivalent: "")
         rounding.target = self
@@ -362,6 +459,170 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         }
     }
 
+    @objc private func startWorkday() {
+        guard !isBusy else { return }
+        let now = Date()
+        let next: Workday
+        if let workday, !WorkdayMath.isPast(workday, now: now) {
+            next = workday.resuming(at: now)
+        } else {
+            next = Workday.started(now: now)
+        }
+        store(next)
+    }
+
+    @objc private func pauseWorkday() {
+        guard !isBusy, let workday, !WorkdayMath.isPast(workday, now: Date()) else { return }
+        store(workday.pausing(at: Date()))
+    }
+
+    @objc private func stopWorkday() {
+        guard !isBusy, let workday, !WorkdayMath.isPast(workday, now: Date()) else { return }
+        store(workday.stopping(at: Date()))
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        pauseBecauseTheAppIsStopping()
+    }
+
+    @objc private func systemWillSleep(_ notification: Notification) {
+        pauseBecauseTheAppIsStopping()
+    }
+
+    /// Sleep, shutdown, and quit must not keep counting. The time already counted stays, and the same day can be resumed.
+    private func pauseBecauseTheAppIsStopping() {
+        guard let workday, workday.phase == .running else { return }
+        let now = Date()
+        if WorkdayMath.isPast(workday, now: now) {
+            normalizeWorkdayClock(now: now)
+            updateStatusItem()
+            return
+        }
+        let paused = workday.pausing(at: now)
+        self.workday = paused
+        try? WorkdayStore.save(paused)
+        updateStatusItem()
+    }
+
+    @objc private func bookDifference() {
+        guard !isBusy, let workday else { return }
+        let now = Date()
+        guard differenceIsLoaded(now: now) else { return }
+        guard let client = makeClient() else { return }
+        guard let config = try? FavoritesStore.load(), let pair = config.differencePair else {
+            presentSettings()
+            return
+        }
+        guard isPairAvailable(pair) else { return }
+        let today = WorkdayMath.dayString(from: now)
+        let includeTracker = workday.day == today
+        let entries = entriesForDifference(now: now)
+        let gap = WorkdayMath.gapMinutes(
+            elapsed: workday.elapsed(at: now),
+            bookedMinutes: WorkdayMath.bookedMinutes(entries: entries, tracker: includeTracker ? tracker : nil, now: now)
+        )
+        guard gap > 0 else { return }
+        let existing = WorkdayMath.differenceEntry(
+            in: entries,
+            projectId: pair.projectId,
+            serviceId: pair.serviceId,
+            runningId: includeTracker ? tracker?.entryId : nil
+        )
+        let day = workday.day
+        beginTrackingChange()
+        Task {
+            do {
+                if let existing {
+                    try await client.saveMinutes(entryId: existing.id, minutes: existing.minutes + gap)
+                } else {
+                    try await client.addSettledTime(
+                        projectId: pair.projectId,
+                        serviceId: pair.serviceId,
+                        minutes: gap,
+                        note: WorkdayMath.differenceNote,
+                        day: day
+                    )
+                }
+                if day == WorkdayMath.dayString(from: Date()) {
+                    let todayEntries = try? await client.today()
+                    DispatchQueue.main.async {
+                        if let todayEntries { self.applyToday(todayEntries) }
+                        self.isBusy = false
+                        self.updateStatusItem()
+                    }
+                } else {
+                    let loaded = try? await client.entries(on: day)
+                    DispatchQueue.main.async {
+                        if let loaded, self.workday?.day == day {
+                            self.pastEntries = loaded
+                            self.pastDay = day
+                            self.pastLoaded = true
+                            self.pastError = nil
+                        }
+                        self.isBusy = false
+                        self.updateStatusItem()
+                    }
+                }
+            } catch {
+                self.failTracking(error)
+            }
+        }
+    }
+
+    private func store(_ workday: Workday) {
+        self.workday = workday
+        do {
+            try WorkdayStore.save(workday)
+        } catch {
+            presentError(error)
+        }
+        updateStatusItem()
+    }
+
+    private func normalizeWorkdayClock(now: Date = Date()) {
+        guard let workday else { return }
+        let next = WorkdayMath.normalizing(workday, now: now)
+        guard next != workday else { return }
+        self.workday = next
+        try? WorkdayStore.save(next)
+        pastLoaded = false
+        pastEntries = []
+        pastError = nil
+        pastDay = nil
+        refreshPastEntries()
+    }
+
+    private func currentGapMinutes(now: Date) -> Int {
+        guard let workday else { return 0 }
+        let includeTracker = workday.day == WorkdayMath.dayString(from: now)
+        return WorkdayMath.gapMinutes(
+            elapsed: workday.elapsed(at: now),
+            bookedMinutes: WorkdayMath.bookedMinutes(
+                entries: entriesForDifference(now: now),
+                tracker: includeTracker ? tracker : nil,
+                now: now
+            )
+        )
+    }
+
+    private func entriesForDifference(now: Date) -> [TodayEntry] {
+        guard let workday else { return [] }
+        if workday.day == WorkdayMath.dayString(from: now) { return todayEntries }
+        return pastDay == workday.day ? pastEntries : []
+    }
+
+    private func differenceIsLoaded(now: Date) -> Bool {
+        guard let workday else { return false }
+        if workday.day == WorkdayMath.dayString(from: now) { return todayLoaded }
+        return pastLoaded && pastDay == workday.day
+    }
+
+    private func differenceError(now: Date) -> String? {
+        guard let workday else { return nil }
+        if workday.day == WorkdayMath.dayString(from: now) { return todayError }
+        return pastError
+    }
+
     private func makeClient() -> MiteClient? {
         keyIsStored = Keychain.load() != nil
         do {
@@ -393,6 +654,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
             refreshTracker()
         }
         refreshToday()
+        refreshPastEntries()
     }
 
     private func refreshCatalog() {
@@ -459,6 +721,46 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         todayError = nil
     }
 
+    private func refreshPastEntries() {
+        guard keyIsStored, let workday else { return }
+        let today = WorkdayMath.dayString(from: Date())
+        guard workday.day != today else { return }
+        pastEpoch += 1
+        let epoch = pastEpoch
+        let day = workday.day
+        if pastDay != day {
+            pastLoaded = false
+            pastEntries = []
+            pastError = nil
+            pastDay = day
+        }
+        let client: MiteClient
+        do {
+            client = try MiteClient.make()
+        } catch {
+            return
+        }
+        Task {
+            do {
+                let entries = try await client.entries(on: day)
+                DispatchQueue.main.async {
+                    guard epoch == self.pastEpoch, self.workday?.day == day else { return }
+                    self.pastEntries = entries
+                    self.pastDay = day
+                    self.pastLoaded = true
+                    self.pastError = nil
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    guard epoch == self.pastEpoch, self.workday?.day == day else { return }
+                    if !self.pastLoaded {
+                        self.pastError = "The difference could not be loaded"
+                    }
+                }
+            }
+        }
+    }
+
     private func beginTrackingChange() {
         trackerEpoch += 1
         isBusy = true
@@ -489,30 +791,72 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
     }
 
     private func updateStatusItem() {
+        normalizeWorkdayClock()
         guard let button = statusItem.button else { return }
+        let font = button.font ?? NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
         if isBusy {
+            button.contentTintColor = nil
+            button.attributedTitle = NSAttributedString(string: "")
             button.title = " …"
+            syncTick()
             return
         }
-        guard let tracker else {
-            button.title = button.image == nil ? "mite" : ""
-            button.toolTip = "mite"
-            tick?.invalidate()
-            tick = nil
-            return
+
+        let now = Date()
+        let config = (try? FavoritesStore.load()) ?? .empty
+        let workdayText = workday.map { formatDuration($0.elapsed(at: now)) }
+        let projectText = tracker.map { formatElapsed(since: $0.since, now: now) }
+        let overtime = workday.map {
+            WorkdayMath.isOvertime(elapsed: $0.elapsed(at: now), standardMinutes: config.standardMinutes)
+        } ?? false
+
+        if overtime, let workdayText {
+            var text = " " + workdayText
+            if let projectText {
+                text += " · " + projectText
+            }
+            button.title = ""
+            button.attributedTitle = NSAttributedString(string: text, attributes: [
+                .font: font,
+                .foregroundColor: NSColor.systemRed,
+            ])
+            button.contentTintColor = .systemRed
+        } else {
+            var parts: [String] = []
+            if let workdayText { parts.append(workdayText) }
+            if let projectText { parts.append(projectText) }
+            button.contentTintColor = nil
+            button.attributedTitle = NSAttributedString(string: "")
+            button.title = parts.isEmpty ? (button.image == nil ? "mite" : "") : " " + parts.joined(separator: " · ")
         }
-        button.title = " " + formatElapsed(since: tracker.since)
-        var lines = [tracker.headline, tracker.note].filter { !$0.isEmpty }
-        if tracker.minutesAlready > 0 {
-            lines.append("\(tracker.minutesAlready) min already saved")
+
+        var lines: [String] = []
+        if workday != nil {
+            lines.append(workdayHeader(config: config, now: now))
+        }
+        if let tracker {
+            lines.append(contentsOf: [tracker.headline, tracker.note].filter { !$0.isEmpty })
+            if tracker.minutesAlready > 0 {
+                lines.append("\(tracker.minutesAlready) min already saved")
+            }
         }
         button.toolTip = lines.isEmpty ? "mite" : lines.joined(separator: "\n")
-        guard tick == nil else { return }
-        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
-            self?.updateStatusItem()
+        syncTick()
+    }
+
+    private func syncTick() {
+        let running = tracker != nil || workday?.phase == .running
+        if running {
+            guard tick == nil else { return }
+            let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+                self?.updateStatusItem()
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            tick = timer
+        } else {
+            tick?.invalidate()
+            tick = nil
         }
-        RunLoop.main.add(timer, forMode: .common)
-        tick = timer
     }
 
     private func presentError(_ error: Error) {
@@ -526,8 +870,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
     }
 }
 
-let app = NSApplication.shared
-let controller = AppController()
-app.delegate = controller
-app.setActivationPolicy(.accessory)
-app.run()
+if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+    let app = NSApplication.shared
+    let controller = AppController()
+    app.delegate = controller
+    app.setActivationPolicy(.accessory)
+    app.run()
+}

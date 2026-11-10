@@ -2,7 +2,11 @@
 
 A small macOS menu-bar timer for [mite](https://mite.de). It replaces the part of mite.nano that does not fit this workflow: a short list of customer-or-project plus service pairs, then a ticket or note, then the timer starts.
 
-Version 0.3.
+Version 0.4.
+
+## What's new in 0.4
+
+**Working time.** Start it in the morning, pause it for a break, and stop it when the day is done. Closing the Mac pauses it. This clock is the whole day, separate from the project timer, and it does not round. Set daily hours, such as 8, and the menu-bar time turns red after that. If the day is longer than the minutes booked on projects, add the exact difference to one pair.
 
 ## What's new in 0.3
 
@@ -109,6 +113,9 @@ Use **Add pair** so the app writes each project and service id from your account
 {
   "account": "your-account",
   "roundUpMinutes": 15,
+  "standardMinutes": 480,
+  "differenceProjectId": 1002,
+  "differenceServiceId": 12,
   "pairs": [
     { "label": "Customer — Consulting", "projectId": 1001, "serviceId": 10 },
     { "label": "Internal — Meetings", "projectId": 1002, "serviceId": 11 },
@@ -121,7 +128,29 @@ Each pair has a `label`, a `projectId`, and a `serviceId`. The same project can 
 
 Leave out `roundUpMinutes`, or set it to `0`, to store the exact tracked minutes. Any positive number is the block size. The menu switch writes `15` or removes the key.
 
+`standardMinutes` and the difference ids belong to working time, described below. Leave them out to skip both.
+
 A pair whose project or service is no longer active is shown as unavailable.
+
+## Working time
+
+The project timer tracks one mite entry. Working time is the whole day. It does not round.
+
+**Start working time** begins the day. **Pause working time** is a break. **Resume working time** continues it. **Stop working time** ends the day. Closing the Mac, shutting it down, or quitting the app pauses the clock, so that time is not counted as work. Open it again the same day and choose Resume, or choose Stop if the day is over. The time already counted is kept.
+
+The menu bar shows this time in front of the project timer. Choose **Daily hours…** and enter a target, for example `8` or `7:30`. After that long, the time turns red.
+
+Booked project time can be shorter than the day. Choose the pair that should receive the difference, then choose **Add 18 min to Customer — Service**. The minutes are exact. mite stores them on that pair with the note `Working time`. Choosing it again the same day adds any new difference to that entry.
+
+The previous day stays in the menu until you start the next one, including after you open the Mac the next morning. The difference is written on that day. **Start working time** then begins the new day.
+
+```json
+"standardMinutes": 480,
+"differenceProjectId": 1002,
+"differenceServiceId": 12
+```
+
+`standardMinutes` is the daily target. 480 is 8 hours. Leave it out to keep the clock one color. The two ids pick a pair from the list. Leave them out until you want the difference written to mite. The settings window writes all three.
 
 ## License
 

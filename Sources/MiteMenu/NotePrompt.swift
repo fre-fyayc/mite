@@ -29,7 +29,11 @@ func activateApp() {
 }
 
 func formatElapsed(since: Date, now: Date = Date()) -> String {
-    let seconds = max(0, Int(now.timeIntervalSince(since)))
+    formatDuration(now.timeIntervalSince(since))
+}
+
+func formatDuration(_ interval: TimeInterval) -> String {
+    let seconds = max(0, Int(interval))
     let hours = seconds / 3600
     let minutes = (seconds % 3600) / 60
     let remainder = seconds % 60

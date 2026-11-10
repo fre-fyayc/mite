@@ -10,13 +10,28 @@ struct AppConfig: Codable, Equatable {
     var account: String
     var pairs: [FavoritePair]
     var roundUpMinutes: Int?
+    /// Daily target for the working-time clock. The menu bar turns red after this many minutes.
+    var standardMinutes: Int?
+    /// Pair that receives the unbooked difference. Both ids are set together.
+    var differenceProjectId: Int?
+    var differenceServiceId: Int?
 
     static let empty = AppConfig(account: "", pairs: [])
 
-    init(account: String, pairs: [FavoritePair], roundUpMinutes: Int? = nil) {
+    init(
+        account: String,
+        pairs: [FavoritePair],
+        roundUpMinutes: Int? = nil,
+        standardMinutes: Int? = nil,
+        differenceProjectId: Int? = nil,
+        differenceServiceId: Int? = nil
+    ) {
         self.account = account
         self.pairs = pairs
         self.roundUpMinutes = roundUpMinutes
+        self.standardMinutes = standardMinutes
+        self.differenceProjectId = differenceProjectId
+        self.differenceServiceId = differenceServiceId
     }
 
     init(from decoder: Decoder) throws {
@@ -24,6 +39,23 @@ struct AppConfig: Codable, Equatable {
         account = try container.decodeIfPresent(String.self, forKey: .account) ?? ""
         pairs = try container.decodeIfPresent([FavoritePair].self, forKey: .pairs) ?? []
         roundUpMinutes = try container.decodeIfPresent(Int.self, forKey: .roundUpMinutes)
+        standardMinutes = nil
+        differenceProjectId = nil
+        differenceServiceId = nil
+        if let minutes = try container.decodeIfPresent(Int.self, forKey: .standardMinutes), minutes > 0 {
+            standardMinutes = minutes
+        }
+        let project = try container.decodeIfPresent(Int.self, forKey: .differenceProjectId)
+        let service = try container.decodeIfPresent(Int.self, forKey: .differenceServiceId)
+        if let project, let service {
+            differenceProjectId = project
+            differenceServiceId = service
+        }
+    }
+
+    var differencePair: FavoritePair? {
+        guard let differenceProjectId, let differenceServiceId else { return nil }
+        return pairs.first { $0.projectId == differenceProjectId && $0.serviceId == differenceServiceId }
     }
 }
 
@@ -152,6 +184,13 @@ enum FavoritesStore {
         ]
         if let roundUpMinutes = config.roundUpMinutes, roundUpMinutes > 0 {
             object["roundUpMinutes"] = roundUpMinutes
+        }
+        if let standardMinutes = config.standardMinutes, standardMinutes > 0 {
+            object["standardMinutes"] = standardMinutes
+        }
+        if let projectId = config.differenceProjectId, let serviceId = config.differenceServiceId {
+            object["differenceProjectId"] = projectId
+            object["differenceServiceId"] = serviceId
         }
         var data = try JSONSerialization.data(
             withJSONObject: object,

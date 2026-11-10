@@ -9,7 +9,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, @unc
     private let projectPopup = NSPopUpButton()
     private let servicePopup = NSPopUpButton()
     private let addButton = NSButton()
+    private let hoursField = NSTextField()
+    private let gapPopup = NSPopUpButton()
+    private let saveWorkdayButton = NSButton()
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
+    private var gapPairs: [FavoritePair] = []
 
     private var loadedProjects: [MiteProject] = []
     private var loadedServices: [MiteService] = []
@@ -18,7 +22,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, @unc
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 390),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 700),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -48,6 +52,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, @unc
             return
         }
         reloadFields()
+        reloadWorkingTime()
         if !didPlace {
             window.center()
             didPlace = true
@@ -87,10 +92,23 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, @unc
         addButton.target = self
         addButton.action = #selector(addPair)
 
+        hoursField.placeholderString = "8 or 7:30"
+        configure(popup: gapPopup)
+        saveWorkdayButton.title = "Save working time"
+        saveWorkdayButton.bezelStyle = .rounded
+        saveWorkdayButton.target = self
+        saveWorkdayButton.action = #selector(saveWorkingTime)
+
         statusLabel.maximumNumberOfLines = 3
         statusLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
         statusLabel.textColor = .secondaryLabelColor
         statusLabel.preferredMaxLayoutWidth = 460
+
+        let workdayHint = NSTextField(wrappingLabelWithString: "Daily hours turn the menu-bar clock red after that time. The difference between working time and minutes booked on projects is saved on the chosen pair, in exact minutes. The mite note is Working time.")
+        workdayHint.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
+        workdayHint.textColor = .secondaryLabelColor
+        workdayHint.preferredMaxLayoutWidth = 460
+        workdayHint.maximumNumberOfLines = 4
 
         let hint = NSTextField(wrappingLabelWithString: "Pairs are saved in \(FavoritesStore.displayPath). Rename, reorder, or remove them in that file. The menu reads it each time it opens.")
         hint.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
@@ -112,6 +130,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, @unc
             projectPopup,
             servicePopup,
             addButton,
+            heading("Working time"),
+            NSTextField(labelWithString: "Daily hours"),
+            hoursField,
+            NSTextField(labelWithString: "Add the difference to"),
+            gapPopup,
+            workdayHint,
+            saveWorkdayButton,
             statusLabel,
             hint,
         ]
@@ -120,6 +145,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, @unc
         }
         stack.setCustomSpacing(16, after: connectButton)
         stack.setCustomSpacing(16, after: addButton)
+        stack.setCustomSpacing(16, after: saveWorkdayButton)
 
         content.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -130,6 +156,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, @unc
             apiKeyField.widthAnchor.constraint(equalToConstant: 360),
             projectPopup.widthAnchor.constraint(equalToConstant: 460),
             servicePopup.widthAnchor.constraint(equalToConstant: 460),
+            hoursField.widthAnchor.constraint(equalToConstant: 120),
+            gapPopup.widthAnchor.constraint(equalToConstant: 460),
+            workdayHint.widthAnchor.constraint(equalToConstant: 460),
             statusLabel.widthAnchor.constraint(equalToConstant: 460),
             hint.widthAnchor.constraint(equalToConstant: 460),
         ])
@@ -206,6 +235,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, @unc
         isLoading = true
         connectButton.isEnabled = false
         addButton.isEnabled = false
+        saveWorkdayButton.isEnabled = false
         connectButton.title = "Loading…"
         setStatus("Loading projects and services…", isError: false)
         Task {
@@ -227,6 +257,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, @unc
     private func finishLoad(projects: [MiteProject]?, services: [MiteService]?, error: Error?) {
         isLoading = false
         connectButton.isEnabled = true
+        saveWorkdayButton.isEnabled = true
         connectButton.title = "Save connection"
         guard let projects, let services else {
             setStatus(error?.localizedDescription ?? "Could not load projects and services.", isError: true)
@@ -258,9 +289,81 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, @unc
             } else {
                 setStatus("Added \(label).", isError: false)
             }
+            let selected = selectedGapPair()
+            fillGapPopup(projectId: selected?.projectId, serviceId: selected?.serviceId)
         } catch {
             setStatus(error.localizedDescription, isError: true)
         }
+    }
+
+    private func reloadWorkingTime() {
+        let config = try? FavoritesStore.load()
+        if let minutes = config?.standardMinutes, minutes > 0 {
+            hoursField.stringValue = WorkdayMath.formatHoursField(minutes)
+        } else {
+            hoursField.stringValue = ""
+        }
+        fillGapPopup(projectId: config?.differenceProjectId, serviceId: config?.differenceServiceId)
+    }
+
+    @objc private func saveWorkingTime() {
+        guard !isLoading else { return }
+        window?.makeFirstResponder(nil)
+        let raw = hoursField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let minutes: Int?
+        if raw.isEmpty {
+            minutes = nil
+        } else if let parsed = WorkdayMath.parseHours(raw) {
+            minutes = parsed
+        } else {
+            setStatus("Enter daily hours as 8 or 7:30.", isError: true)
+            return
+        }
+        let pair = selectedGapPair()
+        do {
+            var config = try FavoritesStore.load()
+            config.standardMinutes = minutes
+            config.differenceProjectId = pair?.projectId
+            config.differenceServiceId = pair?.serviceId
+            try FavoritesStore.save(config)
+            if let minutes {
+                hoursField.stringValue = WorkdayMath.formatHoursField(minutes)
+            }
+            setStatus("Saved working time.", isError: false)
+        } catch {
+            setStatus(error.localizedDescription, isError: true)
+        }
+    }
+
+    private func fillGapPopup(projectId: Int?, serviceId: Int?) {
+        gapPairs = (try? FavoritesStore.load())?.pairs ?? []
+        gapPopup.removeAllItems()
+        if gapPairs.isEmpty {
+            gapPopup.addItem(withTitle: "Add a pair first")
+            gapPopup.lastItem?.tag = -1
+            gapPopup.lastItem?.isEnabled = false
+            return
+        }
+        gapPopup.addItem(withTitle: "None")
+        gapPopup.lastItem?.tag = -1
+        for (index, pair) in gapPairs.enumerated() {
+            let title = pair.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            gapPopup.addItem(withTitle: title.isEmpty ? "(untitled)" : title)
+            gapPopup.lastItem?.tag = index
+        }
+        guard let projectId, let serviceId,
+              let index = gapPairs.firstIndex(where: { $0.projectId == projectId && $0.serviceId == serviceId })
+        else { return }
+        if let item = gapPopup.itemArray.first(where: { $0.tag == index }) {
+            gapPopup.select(item)
+        }
+    }
+
+    private func selectedGapPair() -> FavoritePair? {
+        guard let item = gapPopup.selectedItem, item.isEnabled, gapPairs.indices.contains(item.tag) else {
+            return nil
+        }
+        return gapPairs[item.tag]
     }
 
     private func fillPopups() {
