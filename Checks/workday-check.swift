@@ -1,4 +1,4 @@
-// swiftc -o /tmp/workday-check Sources/MiteMenu/FavoritesStore.swift Sources/MiteMenu/MiteClient.swift Sources/MiteMenu/Workday.swift Checks/workday-check.swift && /tmp/workday-check
+// swiftc -framework Security -o /tmp/workday-check Sources/MiteMenu/FavoritesStore.swift Sources/MiteMenu/MiteClient.swift Sources/MiteMenu/Keychain.swift Sources/MiteMenu/Workday.swift Checks/workday-check.swift && /tmp/workday-check
 import Foundation
 
 private var failures: [String] = []
@@ -54,16 +54,58 @@ private func stopFreezesTheDayAndCanResume() {
     checkClose(resumed.elapsed(at: start.addingTimeInterval(9060)), 3660, "resume after stop")
 }
 
-private func runningClockStopsAtMidnight() {
-    let start = date(2026, 11, 10, 22, 0)
+private func idleAndAClosedNightKeepCounting() {
+    let start = date(2026, 11, 10, 12, 0)
     let clock = Workday.started(now: start, calendar: calendar)
-    let morning = date(2026, 11, 11, 9, 0)
-    let finished = WorkdayMath.normalizing(clock, now: morning, calendar: calendar)
-    checkEqual(finished.day, "2026-11-10", "capped day")
-    checkEqual(finished.phase, .stopped, "capped phase")
-    checkClose(finished.elapsed(at: morning), 2 * 3600, "night is not counted")
-    check(WorkdayMath.isPast(finished, now: morning, calendar: calendar), "previous day")
-    checkEqual(WorkdayMath.dayPhrase(for: finished.day, now: morning, calendar: calendar), "yesterday", "yesterday label")
+    let afterLunch = start.addingTimeInterval(90 * 60)
+    let still = WorkdayMath.normalizing(clock, now: afterLunch, calendar: calendar)
+    checkEqual(still, clock, "lunch leaves the clock running")
+    checkClose(still.elapsed(at: afterLunch), 90 * 60, "lunch is counted")
+
+    let evening = date(2026, 11, 10, 20, 0)
+    let late = Workday.started(now: evening, calendar: calendar)
+    let duringNight = date(2026, 11, 11, 4, 0)
+    let acrossMidnight = WorkdayMath.normalizing(late, now: duringNight, calendar: calendar)
+    checkEqual(acrossMidnight.phase, .running, "still running after midnight")
+    checkEqual(acrossMidnight.day, "2026-11-10", "day stays the start day")
+    checkClose(acrossMidnight.elapsed(at: duringNight), 8 * 3600, "closed hours count")
+    checkEqual(WorkdayMath.dayPhrase(for: acrossMidnight.day, now: duringNight, calendar: calendar), "yesterday", "yesterday label")
+    let nextMorning = date(2026, 11, 11, 9, 0)
+    let capped = WorkdayMath.normalizing(late, now: nextMorning, calendar: calendar)
+    checkEqual(capped.phase, .stopped, "a closed night stops at the limit")
+    checkClose(capped.elapsed(at: nextMorning), WorkdayMath.maximumDuration, "asleep time after the limit is left out")
+}
+
+private func automaticStopLandsOnTenHoursFortyFiveMinutes() {
+    let start = date(2026, 11, 10, 8, 0)
+    let clock = Workday.started(now: start, calendar: calendar)
+    let justBefore = start.addingTimeInterval(WorkdayMath.maximumDuration - 1)
+    checkEqual(WorkdayMath.normalizing(clock, now: justBefore, calendar: calendar).phase, .running, "one second before the limit")
+    let morningAfter = start.addingTimeInterval(WorkdayMath.maximumDuration + 3 * 3600)
+    let stopped = WorkdayMath.normalizing(clock, now: morningAfter, calendar: calendar)
+    checkEqual(stopped.phase, .stopped, "automatic stop")
+    checkEqual(stopped.day, "2026-11-10", "automatic stop keeps the day")
+    checkClose(stopped.elapsed(at: morningAfter), WorkdayMath.maximumDuration, "time after the limit is left out")
+    check(WorkdayMath.stoppedAtLimit(stopped), "recognized as the automatic stop")
+    let manual = clock.stopping(at: start.addingTimeInterval(3600))
+    check(!WorkdayMath.stoppedAtLimit(manual), "a manual stop is not the limit")
+}
+
+private func resumeAfterTheLimitKeepsCounting() {
+    let start = date(2026, 11, 10, 8, 0)
+    let clock = Workday.started(now: start, calendar: calendar)
+    let later = start.addingTimeInterval(WorkdayMath.maximumDuration + 600)
+    let capped = WorkdayMath.normalizing(clock, now: later, calendar: calendar)
+    let resumedAt = later.addingTimeInterval(60)
+    let resumed = capped.resuming(at: resumedAt)
+    checkEqual(resumed.phase, .running, "resume after the limit")
+    check(resumed.limitLifted, "limit lifted")
+    let after = resumedAt.addingTimeInterval(120)
+    let kept = WorkdayMath.normalizing(resumed, now: after, calendar: calendar)
+    checkEqual(kept.phase, .running, "does not stop again")
+    checkClose(kept.elapsed(at: after), WorkdayMath.maximumDuration + 120, "counts past the limit")
+    let loaded = try? WorkdayFile.workday(from: WorkdayFile.data(for: kept))
+    check(loaded?.limitLifted == true, "file keeps the lifted limit")
 }
 
 private func pausedPreviousDayStaysFinished() {
@@ -177,7 +219,9 @@ struct WorkdayCheck {
     static func main() {
         pauseKeepsElapsedAndResumeContinues()
         stopFreezesTheDayAndCanResume()
-        runningClockStopsAtMidnight()
+        idleAndAClosedNightKeepCounting()
+        automaticStopLandsOnTenHoursFortyFiveMinutes()
+        resumeAfterTheLimitKeepsCounting()
         pausedPreviousDayStaysFinished()
         sameDayIsLeftRunning()
         gapUsesWholeMinutes()

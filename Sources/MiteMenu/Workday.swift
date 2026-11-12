@@ -11,6 +11,8 @@ struct Workday: Equatable {
     var accumulated: TimeInterval
     var runningSince: Date?
     var phase: Phase
+    /// Set when the day continues after the automatic stop, so the clock is not stopped again.
+    var limitLifted = false
 
     static func started(now: Date, calendar: Calendar = .current) -> Workday {
         Workday(
@@ -46,20 +48,17 @@ struct Workday: Equatable {
         var copy = self
         copy.runningSince = now
         copy.phase = .running
+        if copy.accumulated >= WorkdayMath.maximumDuration {
+            copy.limitLifted = true
+        }
         return copy
     }
 
-    /// Freezes a running clock at `end`, which is the start of the next day.
-    func capped(at end: Date) -> Workday {
-        guard phase == .running, let runningSince else {
-            var copy = self
-            copy.runningSince = nil
-            copy.phase = .stopped
-            return copy
-        }
+    /// Stops a running clock at 10 hours and 45 minutes. Time after that moment is left out.
+    func stoppingAtLimit() -> Workday {
+        guard phase == .running, runningSince != nil, !limitLifted else { return self }
         var copy = self
-        let until = max(runningSince, end)
-        copy.accumulated += until.timeIntervalSince(runningSince)
+        copy.accumulated = WorkdayMath.maximumDuration
         copy.runningSince = nil
         copy.phase = .stopped
         return copy
@@ -69,6 +68,9 @@ struct Workday: Equatable {
 enum WorkdayMath {
     /// mite note used to find the one entry that holds the unbooked difference.
     static let differenceNote = "Working time"
+
+    /// A forgotten clock stops after 10 hours and 45 minutes.
+    static let maximumDuration: TimeInterval = (10 * 60 + 45) * 60
 
     static func dayString(from date: Date, calendar: Calendar = .current) -> String {
         let formatter = DateFormatter()
@@ -93,17 +95,25 @@ enum WorkdayMath {
         calendar.startOfDay(for: date)
     }
 
-    /// A clock from an earlier day is finished. A running clock stops at midnight so the night is not counted.
+    /// A running clock keeps going through idle time, sleep, and midnight. It stops on its own after 10 hours and 45 minutes. A paused or stopped clock from an earlier day stays finished.
     static func normalizing(_ stored: Workday, now: Date, calendar: Calendar = .current) -> Workday {
+        if stored.phase == .running, !stored.limitLifted, stored.elapsed(at: now) >= maximumDuration {
+            return stored.stoppingAtLimit()
+        }
         let today = dayString(from: now, calendar: calendar)
         guard stored.day != today else { return stored }
         if stored.phase == .running {
-            return stored.capped(at: startOfDay(now, calendar: calendar))
+            return stored
         }
         var finished = stored
         finished.runningSince = nil
         finished.phase = .stopped
         return finished
+    }
+
+    /// The clock reached 10 hours and 45 minutes on its own.
+    static func stoppedAtLimit(_ workday: Workday) -> Bool {
+        workday.phase == .stopped && !workday.limitLifted && workday.accumulated >= maximumDuration
     }
 
     static func isPast(_ workday: Workday, now: Date, calendar: Calendar = .current) -> Bool {
@@ -219,6 +229,9 @@ enum WorkdayFile {
             "day": workday.day,
             "phase": workday.phase.rawValue,
         ]
+        if workday.limitLifted {
+            object["limitLifted"] = true
+        }
         if let runningSince = workday.runningSince {
             object["runningSince"] = iso.string(from: runningSince)
         }
@@ -243,10 +256,17 @@ enum WorkdayFile {
         }
         let accumulated = seconds(object["accumulated"]) ?? 0
         let runningSince = (object["runningSince"] as? String).flatMap { iso.date(from: $0) }
+        let limitLifted = object["limitLifted"] as? Bool ?? false
         guard phase != .running || runningSince != nil else {
             throw ConfigError.unreadable("Could not read the working-time clock.")
         }
-        return Workday(day: day, accumulated: max(0, accumulated), runningSince: phase == .running ? runningSince : nil, phase: phase)
+        return Workday(
+            day: day,
+            accumulated: max(0, accumulated),
+            runningSince: phase == .running ? runningSince : nil,
+            phase: phase,
+            limitLifted: limitLifted
+        )
     }
 
     private static func seconds(_ value: Any?) -> TimeInterval? {

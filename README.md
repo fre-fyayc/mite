@@ -6,7 +6,7 @@ Version 0.4.
 
 ## What's new in 0.4
 
-**Working time.** Start it in the morning, pause it for a break, and stop it when the day is done. Closing the Mac pauses it. This clock is the whole day, separate from the project timer, and it does not round. Set daily hours, such as 8, and the menu-bar time turns red after that. If the day is longer than the minutes booked on projects, add the exact difference to one pair.
+**Working time.** Start it in the morning, pause it for a break, and stop it when the day is done. The clock keeps running while the Mac is idle, asleep, or closed, and while the app is quit. It stops on its own after 10 hours and 45 minutes. This clock is the whole day, separate from the project timer, and it does not round. Set daily hours, such as 8, and the menu-bar time turns red after that. If the day is longer than the minutes booked on projects, add the exact difference to one pair.
 
 ## What's new in 0.3
 
@@ -42,41 +42,15 @@ Leave that terminal open. Quit from the menu.
 
 ## Install the app
 
-Do this once, and again only after you download a newer version. Afterward the timer starts like any other Mac app, and the Terminal window can be closed.
+Do this once, and again after you download a newer version. Afterward the timer starts like any other Mac app, and the Terminal window can be closed.
 
-1. If a timer is already running, open its menu and choose **Quit**.
-2. Open **Terminal**. Press Command-Space, type `Terminal`, and press Return.
-3. Copy this whole block, paste it into Terminal, and press Return. The two lines about a missing search path can be ignored. Wait until the last line finishes and the timer icon appears in the menu bar.
+Open **Terminal**. Press Command-Space, type `Terminal`, and press Return. Paste this line and press Return. Change the path so it points at the folder where you downloaded this project.
 
 ```bash
-cd ~/path/to/mite-menu
-swift build -c release
-APP="$HOME/Applications/Mite Menu.app"
-mkdir -p "$APP/Contents/MacOS"
-cp .build/release/MiteMenu "$APP/Contents/MacOS/Mite Menu"
-cat > "$APP/Contents/Info.plist" << 'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleExecutable</key>
-  <string>Mite Menu</string>
-  <key>CFBundleIdentifier</key>
-  <string>de.mite.menu</string>
-  <key>CFBundleName</key>
-  <string>Mite Menu</string>
-  <key>CFBundlePackageType</key>
-  <string>APPL</string>
-  <key>LSUIElement</key>
-  <true/>
-</dict>
-</plist>
-EOF
-codesign -s - "$APP"
-open "$APP"
+~/path/to/mite-menu/install.sh
 ```
 
-Change the first line so it points at the folder where you downloaded this project.
+The script builds the app, replaces **Mite Menu**, and opens it. If the timer is already running, the script quits it first so the new version starts. The two lines about a missing search path can be ignored. Wait until the timer icon appears in the menu bar.
 
 The app is saved as **Mite Menu** inside the Applications folder in your home folder. In Finder, choose **Go → Home**, then open **Applications**. Double-click **Mite Menu** to start it later. The timer stays in the menu bar at the top of the screen.
 
@@ -136,7 +110,7 @@ A pair whose project or service is no longer active is shown as unavailable.
 
 The project timer tracks one mite entry. Working time is the whole day. It does not round.
 
-**Start working time** begins the day. **Pause working time** is a break. **Resume working time** continues it. **Stop working time** ends the day. Closing the Mac, shutting it down, or quitting the app pauses the clock, so that time is not counted as work. Open it again the same day and choose Resume, or choose Stop if the day is over. The time already counted is kept.
+**Start working time** begins the day. **Pause working time** is a break. **Resume working time** continues it. **Stop working time** ends the day. The clock is the time of day. It keeps running while the Mac is idle, asleep, or shut down, and while this app is not open. Closing the notebook sleeps the Mac. The closed time is counted when it wakes. Quit does not end the day, so choose Stop when the day is done. After 10 hours and 45 minutes the clock stops at that time, and later time is left out, including time the Mac spent asleep. The menu then says stopped at 10:45. Resume on the same day continues past that limit. The time already counted is kept.
 
 The menu bar shows this time in front of the project timer. Choose **Daily hours…** and enter a target, for example `8` or `7:30`. After that long, the time turns red.
 

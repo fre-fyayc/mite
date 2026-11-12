@@ -49,14 +49,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         statusItem.menu = menu
         workday = WorkdayStore.load()
         updateStatusItem()
-        for name in [NSWorkspace.willSleepNotification, NSWorkspace.willPowerOffNotification] {
-            NSWorkspace.shared.notificationCenter.addObserver(
-                self,
-                selector: #selector(systemWillSleep(_:)),
-                name: name,
-                object: nil
-            )
-        }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(systemDidWake(_:)),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
         DispatchQueue.main.async { [weak self] in
             self?.warmCredentials(refreshTrackerIfNeeded: true)
         }
@@ -135,7 +133,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
     private func addWorkday(config: AppConfig, connected: Bool) {
         let now = Date()
         menu.addItem(disabled(workdayHeader(config: config, now: now)))
-        if let workday, WorkdayMath.isPast(workday, now: now) {
+        if let workday, WorkdayMath.isPast(workday, now: now), workday.phase != .running {
             menu.addItem(action("Start working time", #selector(startWorkday)))
         } else {
             switch workday?.phase {
@@ -169,6 +167,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         switch workday.phase {
         case .paused where !WorkdayMath.isPast(workday, now: now):
             parts.append("paused")
+        case .stopped where WorkdayMath.stoppedAtLimit(workday):
+            parts.append("stopped at \(WorkdayMath.formatTarget(Int(WorkdayMath.maximumDuration / 60)))")
         case .stopped:
             parts.append("stopped")
         case .running, .paused:
@@ -463,7 +463,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         guard !isBusy else { return }
         let now = Date()
         let next: Workday
-        if let workday, !WorkdayMath.isPast(workday, now: now) {
+        if let workday, workday.phase == .running || !WorkdayMath.isPast(workday, now: now) {
             next = workday.resuming(at: now)
         } else {
             next = Workday.started(now: now)
@@ -472,35 +472,20 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
     }
 
     @objc private func pauseWorkday() {
-        guard !isBusy, let workday, !WorkdayMath.isPast(workday, now: Date()) else { return }
+        guard !isBusy, let workday, workday.phase == .running else { return }
         store(workday.pausing(at: Date()))
     }
 
     @objc private func stopWorkday() {
-        guard !isBusy, let workday, !WorkdayMath.isPast(workday, now: Date()) else { return }
-        store(workday.stopping(at: Date()))
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        pauseBecauseTheAppIsStopping()
-    }
-
-    @objc private func systemWillSleep(_ notification: Notification) {
-        pauseBecauseTheAppIsStopping()
-    }
-
-    /// Sleep, shutdown, and quit must not keep counting. The time already counted stays, and the same day can be resumed.
-    private func pauseBecauseTheAppIsStopping() {
-        guard let workday, workday.phase == .running else { return }
+        guard !isBusy, let workday else { return }
         let now = Date()
-        if WorkdayMath.isPast(workday, now: now) {
-            normalizeWorkdayClock(now: now)
-            updateStatusItem()
-            return
-        }
-        let paused = workday.pausing(at: now)
-        self.workday = paused
-        try? WorkdayStore.save(paused)
+        guard workday.phase == .running || !WorkdayMath.isPast(workday, now: now) else { return }
+        store(workday.stopping(at: now))
+    }
+
+    /// Sleep does not pause the clock. Waking applies the 10:45 limit if it passed while the Mac was closed.
+    @objc private func systemDidWake(_ notification: Notification) {
+        normalizeWorkdayClock()
         updateStatusItem()
     }
 
