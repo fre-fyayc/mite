@@ -13,6 +13,8 @@ struct Workday: Equatable {
     var phase: Phase
     /// Set when the day continues after the automatic stop, so the clock is not stopped again.
     var limitLifted = false
+    /// Set when Stop ends the day. That day cannot be resumed.
+    var dayFinished = false
 
     static func started(now: Date, calendar: Calendar = .current) -> Workday {
         Workday(
@@ -40,11 +42,12 @@ struct Workday: Equatable {
     func stopping(at now: Date) -> Workday {
         var copy = pausing(at: now)
         copy.phase = .stopped
+        copy.dayFinished = true
         return copy
     }
 
     func resuming(at now: Date) -> Workday {
-        guard phase != .running else { return self }
+        guard phase != .running, !dayFinished else { return self }
         var copy = self
         copy.runningSince = now
         copy.phase = .running
@@ -229,6 +232,9 @@ enum WorkdayFile {
             "day": workday.day,
             "phase": workday.phase.rawValue,
         ]
+        if workday.dayFinished {
+            object["dayFinished"] = true
+        }
         if workday.limitLifted {
             object["limitLifted"] = true
         }
@@ -256,6 +262,7 @@ enum WorkdayFile {
         }
         let accumulated = seconds(object["accumulated"]) ?? 0
         let runningSince = (object["runningSince"] as? String).flatMap { iso.date(from: $0) }
+        let dayFinished = object["dayFinished"] as? Bool ?? false
         let limitLifted = object["limitLifted"] as? Bool ?? false
         guard phase != .running || runningSince != nil else {
             throw ConfigError.unreadable("Could not read the working-time clock.")
@@ -265,7 +272,8 @@ enum WorkdayFile {
             accumulated: max(0, accumulated),
             runningSince: phase == .running ? runningSince : nil,
             phase: phase,
-            limitLifted: limitLifted
+            limitLifted: limitLifted,
+            dayFinished: dayFinished
         )
     }
 
@@ -303,6 +311,10 @@ enum WorkdayStore {
         let directory = fileURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try WorkdayFile.data(for: workday).write(to: fileURL, options: .atomic)
+    }
+
+    static func clear() {
+        try? FileManager.default.removeItem(at: fileURL)
     }
 
     private static func read() -> Workday? {

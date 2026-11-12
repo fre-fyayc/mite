@@ -143,8 +143,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
             case .paused:
                 menu.addItem(action("Resume working time", #selector(startWorkday)))
                 menu.addItem(action("Stop working time", #selector(stopWorkday)))
-            case .stopped:
+            case .stopped where workday?.dayFinished != true:
                 menu.addItem(action("Resume working time", #selector(startWorkday)))
+            case .stopped:
+                break
             case nil:
                 menu.addItem(action("Start working time", #selector(startWorkday)))
             }
@@ -167,6 +169,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         switch workday.phase {
         case .paused where !WorkdayMath.isPast(workday, now: now):
             parts.append("paused")
+        case .stopped where workday.dayFinished:
+            parts.append("day finished")
         case .stopped where WorkdayMath.stoppedAtLimit(workday):
             parts.append("stopped at \(WorkdayMath.formatTarget(Int(WorkdayMath.maximumDuration / 60)))")
         case .stopped:
@@ -462,6 +466,9 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
     @objc private func startWorkday() {
         guard !isBusy else { return }
         let now = Date()
+        if let workday, workday.dayFinished, !WorkdayMath.isPast(workday, now: now) {
+            return
+        }
         let next: Workday
         if let workday, workday.phase == .running || !WorkdayMath.isPast(workday, now: now) {
             next = workday.resuming(at: now)
@@ -480,7 +487,64 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         guard !isBusy, let workday else { return }
         let now = Date()
         guard workday.phase == .running || !WorkdayMath.isPast(workday, now: now) else { return }
-        store(workday.stopping(at: now))
+        DispatchQueue.main.async { [weak self] in
+            self?.confirmAndStopWorkday()
+        }
+    }
+
+    private func confirmAndStopWorkday() {
+        guard !isBusy, let workday else { return }
+        let now = Date()
+        guard workday.phase == .running || !WorkdayMath.isPast(workday, now: now) else { return }
+        switch confirmStopWorkday(now: now) {
+        case .cancel:
+            return
+        case .stop:
+            store(workday.stopping(at: Date()))
+        case .stopAndAdd:
+            store(workday.stopping(at: Date()))
+            writeDifference(thenClear: true)
+        }
+    }
+
+    private enum WorkdayStopChoice {
+        case cancel
+        case stop
+        case stopAndAdd
+    }
+
+    private func confirmStopWorkday(now: Date) -> WorkdayStopChoice {
+        activateApp()
+        let offer = stopAndAddOffer(now: now)
+        let alert = NSAlert()
+        alert.messageText = "This stops the day for today"
+        if let offer {
+            alert.informativeText = "Stop leaves the time already counted, and this day cannot be resumed. \(offer.button) writes that difference to \(offer.pair) and clears the clock."
+        } else {
+            alert.informativeText = "The time already counted stays. This day cannot be resumed."
+        }
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Stop working time")
+        if let offer {
+            alert.addButton(withTitle: offer.button)
+        }
+        alert.addButton(withTitle: "Cancel")
+        alert.window.level = .floating
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn { return .stop }
+        if offer != nil, response == .alertSecondButtonReturn { return .stopAndAdd }
+        return .cancel
+    }
+
+    /// Shown when the difference can be written now. Nil leaves the warning as stop or cancel.
+    private func stopAndAddOffer(now: Date) -> (button: String, pair: String)? {
+        guard keyIsStored else { return nil }
+        guard let config = try? FavoritesStore.load(), !config.account.isEmpty, let pair = config.differencePair else { return nil }
+        guard isPairAvailable(pair) else { return nil }
+        guard differenceIsLoaded(now: now) else { return nil }
+        let gap = currentGapMinutes(now: now)
+        guard gap > 0 else { return nil }
+        return ("Stop and add \(gap) min", menuTitle(for: pair))
     }
 
     /// Sleep does not pause the clock. Waking applies the 10:45 limit if it passed while the Mac was closed.
@@ -490,6 +554,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
     }
 
     @objc private func bookDifference() {
+        writeDifference(thenClear: false)
+    }
+
+    private func writeDifference(thenClear: Bool) {
         guard !isBusy, let workday else { return }
         let now = Date()
         guard differenceIsLoaded(now: now) else { return }
@@ -532,6 +600,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
                     let todayEntries = try? await client.today()
                     DispatchQueue.main.async {
                         if let todayEntries { self.applyToday(todayEntries) }
+                        if thenClear, self.workday?.day == day { self.clearWorkday() }
                         self.isBusy = false
                         self.updateStatusItem()
                     }
@@ -544,6 +613,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
                             self.pastLoaded = true
                             self.pastError = nil
                         }
+                        if thenClear, self.workday?.day == day { self.clearWorkday() }
                         self.isBusy = false
                         self.updateStatusItem()
                     }
@@ -562,6 +632,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
             presentError(error)
         }
         updateStatusItem()
+    }
+
+    private func clearWorkday() {
+        workday = nil
+        pastEpoch += 1
+        pastEntries = []
+        pastLoaded = false
+        pastError = nil
+        pastDay = nil
+        WorkdayStore.clear()
     }
 
     private func normalizeWorkdayClock(now: Date = Date()) {

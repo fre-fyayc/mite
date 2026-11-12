@@ -6,7 +6,7 @@ Version 0.4.
 
 ## What's new in 0.4
 
-**Working time.** Start it in the morning, pause it for a break, and stop it when the day is done. The clock keeps running while the Mac is idle, asleep, or closed, and while the app is quit. It stops on its own after 10 hours and 45 minutes. This clock is the whole day, separate from the project timer, and it does not round. Set daily hours, such as 8, and the menu-bar time turns red after that. If the day is longer than the minutes booked on projects, add the exact difference to one pair.
+**Working time.** Start it in the morning, pause it for a break, and stop it when the day is done. Stop asks before it ends the day. That day cannot be resumed. When the clock is longer than the minutes already booked, the warning also offers to add that difference and clear the clock. The clock keeps running while the Mac is idle, asleep, or closed, and while the app is quit. It stops on its own after 10 hours and 45 minutes. This clock is the whole day, separate from the project timer, and it does not round. Set daily hours, such as 8, and the menu-bar time turns red after that.
 
 ## What's new in 0.3
 
@@ -110,13 +110,13 @@ A pair whose project or service is no longer active is shown as unavailable.
 
 The project timer tracks one mite entry. Working time is the whole day. It does not round.
 
-**Start working time** begins the day. **Pause working time** is a break. **Resume working time** continues it. **Stop working time** ends the day. The clock is the time of day. It keeps running while the Mac is idle, asleep, or shut down, and while this app is not open. Closing the notebook sleeps the Mac. The closed time is counted when it wakes. Quit does not end the day, so choose Stop when the day is done. After 10 hours and 45 minutes the clock stops at that time, and later time is left out, including time the Mac spent asleep. The menu then says stopped at 10:45. Resume on the same day continues past that limit. The time already counted is kept.
+**Start working time** begins the day. **Pause working time** is a break. **Resume working time** continues a pause. **Stop working time** asks first. Stop ends the day. The time already counted stays on the clock, and that day cannot be resumed. When the clock is at least one minute ahead of the minutes already booked, and a pair is chosen for the difference, the warning also offers **Stop and add N min**. That writes the exact gap to the pair and clears the clock. If booked time is already at least the clock, the warning is only Stop. If the write fails, the clock stays so the difference can be added from the menu. The clock is the time of day. It keeps running while the Mac is idle, asleep, or shut down, and while this app is not open. Closing the notebook sleeps the Mac. The closed time is counted when it wakes. Quit does not end the day, so choose Stop when the day is done. After 10 hours and 45 minutes the clock stops at that time, and later time is left out, including time the Mac spent asleep. The menu then says stopped at 10:45. Resume on the same day continues past that limit, until you choose Stop. The time already counted is kept.
 
 The menu bar shows this time in front of the project timer. Choose **Daily hours…** and enter a target, for example `8` or `7:30`. After that long, the time turns red.
 
 Booked project time can be shorter than the day. Choose the pair that should receive the difference, then choose **Add 18 min to Customer — Service**. The minutes are exact. mite stores them on that pair with the note `Working time`. Choosing it again the same day adds any new difference to that entry.
 
-The previous day stays in the menu until you start the next one, including after you open the Mac the next morning. The difference is written on that day. **Start working time** then begins the new day.
+When Stop leaves the clock, that day stays in the menu until you start the next one, including after you open the Mac the next morning. The difference is written on that day. **Start working time** then begins the new day. **Stop and add** clears the clock once the entry is saved, so the next start can begin the same calendar day.
 
 ```json
 "standardMinutes": 480,

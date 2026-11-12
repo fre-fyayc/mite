@@ -44,14 +44,17 @@ private func pauseKeepsElapsedAndResumeContinues() {
     checkClose(clock.elapsed(at: resumed.addingTimeInterval(30)), 120, "resume continues")
 }
 
-private func stopFreezesTheDayAndCanResume() {
+private func stopFinishesTheDayAndCannotResume() {
     let start = date(2026, 11, 10, 8, 0)
     let clock = Workday.started(now: start, calendar: calendar)
     let stopped = clock.stopping(at: start.addingTimeInterval(3600))
     checkEqual(stopped.phase, .stopped, "stop phase")
+    check(stopped.dayFinished, "stop finishes the day")
     checkClose(stopped.elapsed(at: start.addingTimeInterval(9000)), 3600, "stop freezes elapsed")
     let resumed = stopped.resuming(at: start.addingTimeInterval(9000))
-    checkClose(resumed.elapsed(at: start.addingTimeInterval(9060)), 3660, "resume after stop")
+    checkEqual(resumed, stopped, "a finished day does not resume")
+    let loaded = try? WorkdayFile.workday(from: WorkdayFile.data(for: stopped))
+    check(loaded?.dayFinished == true, "file keeps the finished day")
 }
 
 private func idleAndAClosedNightKeepCounting() {
@@ -218,7 +221,7 @@ private func configKeepsWorkingTimeKeys() throws {
 struct WorkdayCheck {
     static func main() {
         pauseKeepsElapsedAndResumeContinues()
-        stopFreezesTheDayAndCanResume()
+        stopFinishesTheDayAndCannotResume()
         idleAndAClosedNightKeepCounting()
         automaticStopLandsOnTenHoursFortyFiveMinutes()
         resumeAfterTheLimitKeepsCounting()
