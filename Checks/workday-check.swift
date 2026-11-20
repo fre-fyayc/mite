@@ -187,6 +187,29 @@ private func parseHours() {
     checkEqual(WorkdayMath.formatTarget(480), "8:00", "target")
 }
 
+private func pausedProjectIsKeptUntilResume() throws {
+    let start = date(2026, 11, 20, 8, 0)
+    var paused = Workday.started(now: start, calendar: calendar).pausing(at: start.addingTimeInterval(3600))
+    paused.pausedEntryId = 42
+    let loaded = try WorkdayFile.workday(from: WorkdayFile.data(for: paused))
+    checkEqual(loaded.pausedEntryId, 42, "paused project survives the clock file")
+    checkEqual(loaded.resuming(at: start.addingTimeInterval(5400)).pausedEntryId, nil, "resume hands the paused project back once")
+    checkEqual(loaded.stopping(at: start.addingTimeInterval(5400)).pausedEntryId, nil, "stop forgets the paused project")
+}
+
+private func stopRoundsTheProjectTimer() {
+    let now = date(2026, 11, 20, 12, 0)
+    let entries = [
+        TodayEntry(id: 1, minutes: 30, note: "", headline: "", locked: false),
+        TodayEntry(id: 2, minutes: 10, note: "", headline: "", locked: false),
+    ]
+    let running = TrackerSnapshot(entryId: 2, since: now.addingTimeInterval(-7 * 60), minutesAlready: 10, headline: "", note: "")
+    checkEqual(WorkdayMath.bookedMinutesAfterFinish(entries: entries, tracker: running, pausedEntryId: nil, increment: 15, now: now), 60, "running timer rounds 17 min up to the next 15-min block")
+    checkEqual(WorkdayMath.bookedMinutesAfterFinish(entries: entries, tracker: running, pausedEntryId: nil, increment: nil, now: now), 47, "no rounding keeps live minutes")
+    checkEqual(WorkdayMath.bookedMinutesAfterFinish(entries: entries, tracker: nil, pausedEntryId: 2, increment: 15, now: now), 45, "paused project rounds up on stop")
+    checkEqual(WorkdayMath.bookedMinutesAfterFinish(entries: entries, tracker: nil, pausedEntryId: nil, increment: 15, now: now), 40, "nothing to finish leaves minutes")
+}
+
 private func clockFileRoundTrip() throws {
     let start = date(2026, 11, 10, 8, 15)
     let clock = Workday.started(now: start, calendar: calendar)
@@ -217,6 +240,23 @@ private func configKeepsWorkingTimeKeys() throws {
     check(cleared.differencePair == nil, "cleared pair")
 }
 
+private func morningReminder() {
+    // 2026-11-18 is a Wednesday, 2026-11-21 a Saturday.
+    let wednesday = date(2026, 11, 18, 8, 10)
+    let saturday = date(2026, 11, 21, 9, 0)
+    check(WorkdayMath.shouldRemindToStart(workday: nil, now: wednesday, handledDay: nil, enabled: true, calendar: calendar), "weekday with no clock reminds")
+    check(!WorkdayMath.shouldRemindToStart(workday: nil, now: saturday, handledDay: nil, enabled: true, calendar: calendar), "weekend does not remind")
+    check(!WorkdayMath.shouldRemindToStart(workday: nil, now: wednesday, handledDay: "2026-11-18", enabled: true, calendar: calendar), "handled today does not remind")
+    check(WorkdayMath.shouldRemindToStart(workday: nil, now: wednesday, handledDay: "2026-11-17", enabled: true, calendar: calendar), "handled yesterday reminds")
+    check(!WorkdayMath.shouldRemindToStart(workday: nil, now: wednesday, handledDay: nil, enabled: false, calendar: calendar), "reminder off does not remind")
+    let runningToday = Workday.started(now: date(2026, 11, 18, 7, 30), calendar: calendar)
+    check(!WorkdayMath.shouldRemindToStart(workday: runningToday, now: wednesday, handledDay: nil, enabled: true, calendar: calendar), "running clock does not remind")
+    let pausedToday = runningToday.pausing(at: date(2026, 11, 18, 7, 45))
+    check(!WorkdayMath.shouldRemindToStart(workday: pausedToday, now: wednesday, handledDay: nil, enabled: true, calendar: calendar), "paused clock today does not remind")
+    let stoppedYesterday = Workday.started(now: date(2026, 11, 17, 8, 0), calendar: calendar).stopping(at: date(2026, 11, 17, 17, 0))
+    check(WorkdayMath.shouldRemindToStart(workday: stoppedYesterday, now: wednesday, handledDay: nil, enabled: true, calendar: calendar), "stopped clock from yesterday reminds")
+}
+
 @main
 struct WorkdayCheck {
     static func main() {
@@ -233,8 +273,11 @@ struct WorkdayCheck {
         bookedMinutesDoNotAddTimeAlreadyStored()
         differenceEntryMatchesTheWorkingTimeNote()
         parseHours()
+        stopRoundsTheProjectTimer()
+        morningReminder()
         do {
             try clockFileRoundTrip()
+            try pausedProjectIsKeptUntilResume()
             try configKeepsWorkingTimeKeys()
         } catch {
             failures.append(error.localizedDescription)

@@ -10,6 +10,12 @@ struct AppConfig: Codable, Equatable {
     var account: String
     var pairs: [FavoritePair]
     var roundUpMinutes: Int?
+    /// Set when the menu switch turns rounding off. `roundUpMinutes` is kept so turning it on again restores it.
+    var roundUpOff = false
+    /// Ask on the first log-on of a weekday when working time has not started.
+    var startReminder = true
+    /// The reminder counts from the screen unlock instead of opening the lid or waking the Mac.
+    var reminderFromUnlock = false
     /// Daily target for the working-time clock. The menu bar turns red after this many minutes.
     var standardMinutes: Int?
     /// Pair that receives the unbooked difference. Both ids are set together.
@@ -22,6 +28,9 @@ struct AppConfig: Codable, Equatable {
         account: String,
         pairs: [FavoritePair],
         roundUpMinutes: Int? = nil,
+        roundUpOff: Bool = false,
+        startReminder: Bool = true,
+        reminderFromUnlock: Bool = false,
         standardMinutes: Int? = nil,
         differenceProjectId: Int? = nil,
         differenceServiceId: Int? = nil
@@ -29,6 +38,9 @@ struct AppConfig: Codable, Equatable {
         self.account = account
         self.pairs = pairs
         self.roundUpMinutes = roundUpMinutes
+        self.roundUpOff = roundUpOff
+        self.startReminder = startReminder
+        self.reminderFromUnlock = reminderFromUnlock
         self.standardMinutes = standardMinutes
         self.differenceProjectId = differenceProjectId
         self.differenceServiceId = differenceServiceId
@@ -39,6 +51,9 @@ struct AppConfig: Codable, Equatable {
         account = try container.decodeIfPresent(String.self, forKey: .account) ?? ""
         pairs = try container.decodeIfPresent([FavoritePair].self, forKey: .pairs) ?? []
         roundUpMinutes = try container.decodeIfPresent(Int.self, forKey: .roundUpMinutes)
+        roundUpOff = try container.decodeIfPresent(Bool.self, forKey: .roundUpOff) ?? false
+        startReminder = try container.decodeIfPresent(Bool.self, forKey: .startReminder) ?? true
+        reminderFromUnlock = try container.decodeIfPresent(Bool.self, forKey: .reminderFromUnlock) ?? false
         standardMinutes = nil
         differenceProjectId = nil
         differenceServiceId = nil
@@ -51,6 +66,12 @@ struct AppConfig: Codable, Equatable {
             differenceProjectId = project
             differenceServiceId = service
         }
+    }
+
+    /// Block size used when finishing a timer. Nil when rounding is off.
+    var activeRoundUpMinutes: Int? {
+        guard !roundUpOff, let roundUpMinutes, roundUpMinutes > 0 else { return nil }
+        return roundUpMinutes
     }
 
     var differencePair: FavoritePair? {
@@ -121,6 +142,22 @@ enum ConfigError: LocalizedError {
 
 enum FavoritesStore {
     private static let decoder = JSONDecoder()
+    private static let cacheLock = NSLock()
+    /// Last decoded config and the file stamp it came from. The menu-bar clock reads the config every second.
+    nonisolated(unsafe) private static var cache: (stamp: FileStamp, config: AppConfig)?
+
+    private struct FileStamp: Equatable {
+        let modified: Date
+        let size: Int
+    }
+
+    private static func stamp() -> FileStamp? {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+              let modified = attributes[.modificationDate] as? Date,
+              let size = attributes[.size] as? Int
+        else { return nil }
+        return FileStamp(modified: modified, size: size)
+    }
 
     static var fileURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -156,12 +193,19 @@ enum FavoritesStore {
         return value
     }
 
+    /// Reads the config file. The decoded value is reused until the file's modification date or size changes.
     static func load() throws -> AppConfig {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return .empty }
+        guard let current = stamp() else { return .empty }
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let cache, cache.stamp == current {
+            return cache.config
+        }
         do {
             let data = try Data(contentsOf: fileURL)
-            if data.isEmpty { return .empty }
-            return try decoder.decode(AppConfig.self, from: data)
+            let config = data.isEmpty ? AppConfig.empty : try decoder.decode(AppConfig.self, from: data)
+            cache = (current, config)
+            return config
         } catch let error as ConfigError {
             throw error
         } catch {
@@ -184,6 +228,15 @@ enum FavoritesStore {
         ]
         if let roundUpMinutes = config.roundUpMinutes, roundUpMinutes > 0 {
             object["roundUpMinutes"] = roundUpMinutes
+            if config.roundUpOff {
+                object["roundUpOff"] = true
+            }
+        }
+        if !config.startReminder {
+            object["startReminder"] = false
+        }
+        if config.reminderFromUnlock {
+            object["reminderFromUnlock"] = true
         }
         if let standardMinutes = config.standardMinutes, standardMinutes > 0 {
             object["standardMinutes"] = standardMinutes

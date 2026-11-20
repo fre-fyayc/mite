@@ -15,6 +15,8 @@ struct Workday: Equatable {
     var limitLifted = false
     /// Set when Stop ends the day. That day cannot be resumed.
     var dayFinished = false
+    /// mite entry whose timer was paused together with working time. Resuming working time starts it again.
+    var pausedEntryId: Int?
 
     static func started(now: Date, calendar: Calendar = .current) -> Workday {
         Workday(
@@ -43,6 +45,7 @@ struct Workday: Equatable {
         var copy = pausing(at: now)
         copy.phase = .stopped
         copy.dayFinished = true
+        copy.pausedEntryId = nil
         return copy
     }
 
@@ -51,6 +54,7 @@ struct Workday: Equatable {
         var copy = self
         copy.runningSince = now
         copy.phase = .running
+        copy.pausedEntryId = nil
         if copy.accumulated >= WorkdayMath.maximumDuration {
             copy.limitLifted = true
         }
@@ -76,22 +80,11 @@ enum WorkdayMath {
     static let maximumDuration: TimeInterval = (10 * 60 + 45) * 60
 
     static func dayString(from date: Date, calendar: Calendar = .current) -> String {
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = calendar.timeZone
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
+        DayFormatter.withFormatter(for: calendar) { $0.string(from: date) }
     }
 
     static func parseDay(_ day: String, calendar: Calendar = .current) -> Date? {
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = calendar.timeZone
-        formatter.dateFormat = "yyyy-MM-dd"
-        formatter.isLenient = false
-        return formatter.date(from: day)
+        DayFormatter.withFormatter(for: calendar) { $0.date(from: day) }
     }
 
     static func startOfDay(_ date: Date, calendar: Calendar = .current) -> Date {
@@ -139,6 +132,21 @@ enum WorkdayMath {
         return formatter.string(from: date)
     }
 
+    /// True when a weekday has no working time started yet and the morning reminder was not answered today.
+    static func shouldRemindToStart(
+        workday: Workday?,
+        now: Date,
+        handledDay: String?,
+        enabled: Bool,
+        calendar: Calendar = .current
+    ) -> Bool {
+        guard enabled, !calendar.isDateInWeekend(now) else { return false }
+        let today = dayString(from: now, calendar: calendar)
+        guard handledDay != today else { return false }
+        guard let workday else { return true }
+        return workday.phase != .running && workday.day != today
+    }
+
     static func isOvertime(elapsed: TimeInterval, standardMinutes: Int?) -> Bool {
         guard let standardMinutes, standardMinutes > 0 else { return false }
         return elapsed >= Double(standardMinutes * 60)
@@ -160,6 +168,39 @@ enum WorkdayMath {
             return stored + max(0, runningTotal - max(0, entry.minutes))
         }
         return stored + runningTotal
+    }
+
+    /// Booked minutes once Stop has finished the project timer. A running timer, or the entry paused with working time, rounds up to the next full block.
+    static func bookedMinutesAfterFinish(
+        entries: [TodayEntry],
+        tracker: TrackerSnapshot?,
+        pausedEntryId: Int?,
+        increment: Int?,
+        now: Date
+    ) -> Int {
+        guard let increment, increment > 0 else {
+            return bookedMinutes(entries: entries, tracker: tracker, now: now)
+        }
+        if let tracker {
+            let rounded = MinuteRounding.ceil(already: tracker.minutesAlready, since: tracker.since, increment: increment, now: now)
+            let finished = TrackerSnapshot(entryId: tracker.entryId, since: now, minutesAlready: rounded, headline: tracker.headline, note: tracker.note)
+            return bookedMinutes(entries: entries, tracker: finished, now: now)
+        }
+        guard let pausedEntryId else { return bookedMinutes(entries: entries, tracker: nil, now: now) }
+        let rounded = entries.map { entry -> TodayEntry in
+            guard entry.id == pausedEntryId, !entry.locked else { return entry }
+            var copy = TodayEntry(
+                id: entry.id,
+                minutes: MinuteRounding.ceil(minutes: entry.minutes, increment: increment),
+                note: entry.note,
+                headline: entry.headline,
+                locked: entry.locked
+            )
+            copy.projectId = entry.projectId
+            copy.serviceId = entry.serviceId
+            return copy
+        }
+        return bookedMinutes(entries: rounded, tracker: nil, now: now)
     }
 
     static func differenceEntry(
@@ -225,6 +266,30 @@ enum WorkdayMath {
     }
 }
 
+/// One reused `yyyy-MM-dd` formatter. The menu-bar clock formats days every second, and a new DateFormatter each time is slow.
+private enum DayFormatter {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var formatter: DateFormatter?
+    nonisolated(unsafe) private static var calendar: Calendar?
+
+    static func withFormatter<T>(for calendar: Calendar, _ body: (DateFormatter) -> T) -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        if let formatter, self.calendar == calendar, formatter.timeZone == calendar.timeZone {
+            return body(formatter)
+        }
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.isLenient = false
+        self.formatter = formatter
+        self.calendar = calendar
+        return body(formatter)
+    }
+}
+
 enum WorkdayFile {
     static func data(for workday: Workday) throws -> Data {
         var object: [String: Any] = [
@@ -237,6 +302,9 @@ enum WorkdayFile {
         }
         if workday.limitLifted {
             object["limitLifted"] = true
+        }
+        if let pausedEntryId = workday.pausedEntryId {
+            object["pausedEntryId"] = pausedEntryId
         }
         if let runningSince = workday.runningSince {
             object["runningSince"] = iso.string(from: runningSince)
@@ -264,6 +332,7 @@ enum WorkdayFile {
         let runningSince = (object["runningSince"] as? String).flatMap { iso.date(from: $0) }
         let dayFinished = object["dayFinished"] as? Bool ?? false
         let limitLifted = object["limitLifted"] as? Bool ?? false
+        let pausedEntryId = object["pausedEntryId"] as? Int
         guard phase != .running || runningSince != nil else {
             throw ConfigError.unreadable("Could not read the working-time clock.")
         }
@@ -273,7 +342,8 @@ enum WorkdayFile {
             runningSince: phase == .running ? runningSince : nil,
             phase: phase,
             limitLifted: limitLifted,
-            dayFinished: dayFinished
+            dayFinished: dayFinished,
+            pausedEntryId: phase == .paused ? pausedEntryId : nil
         )
     }
 

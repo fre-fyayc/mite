@@ -21,6 +21,8 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
     private var tracker: TrackerSnapshot?
     private var trackerEpoch = 0
     private var todayEntries: [TodayEntry] = []
+    /// Day the today list was loaded for. After midnight the list is treated as not loaded until it refreshes.
+    private var todayDay: String?
     private var todayLoaded = false
     private var todayError: String?
     private var todayEpoch = 0
@@ -32,6 +34,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
     private var pastEpoch = 0
     private var isBusy = false
     private var tick: Timer?
+    private var reminderShowing = false
     private var poll: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -55,6 +58,19 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
             name: NSWorkspace.didWakeNotification,
             object: nil
         )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(userDidLogOn(_:)),
+            name: NSWorkspace.sessionDidBecomeActiveNotification,
+            object: nil
+        )
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(userDidLogOn(_:)),
+            name: NSNotification.Name("com.apple.screenIsUnlocked"),
+            object: nil
+        )
+        noteLogon(fromWake: true)
         DispatchQueue.main.async { [weak self] in
             self?.warmCredentials(refreshTrackerIfNeeded: true)
         }
@@ -98,7 +114,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
             if tracker.minutesAlready > 0 {
                 menu.addItem(disabled("\(tracker.minutesAlready) min already saved"))
             }
-            if let increment = config.roundUpMinutes, increment > 0 {
+            if let increment = config.activeRoundUpMinutes {
                 menu.addItem(action("Pause", #selector(pauseTimer)))
                 menu.addItem(action(finishTitle(for: tracker, increment: increment), #selector(finishTimer)))
             } else {
@@ -211,7 +227,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
 
     private func addToday(except runningId: Int?) {
         menu.addItem(disabled("Today"))
-        guard todayLoaded else {
+        guard todayIsCurrent(now: Date()) else {
             menu.addItem(disabled(todayError ?? "Loading today…"))
             return
         }
@@ -237,7 +253,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
     }
 
     private var roundingEnabled: Bool {
-        ((try? FavoritesStore.load())?.roundUpMinutes ?? 0) > 0
+        (try? FavoritesStore.load())?.activeRoundUpMinutes != nil
     }
 
     private var roundingTitle: String {
@@ -286,6 +302,12 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         rounding.target = self
         rounding.state = roundingEnabled ? .on : .off
         menu.addItem(rounding)
+
+        let reminder = NSMenuItem(title: "Remind me to start working time", action: #selector(toggleStartReminder), keyEquivalent: "")
+        reminder.target = self
+        reminder.state = ((try? FavoritesStore.load())?.startReminder ?? true) ? .on : .off
+        reminder.toolTip = "On weekdays, ask at the first log-on or unlock when working time has not started."
+        menu.addItem(reminder)
 
         let quit = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
@@ -342,11 +364,24 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
     @objc private func toggleRoundUp() {
         do {
             var config = try FavoritesStore.load()
-            if let current = config.roundUpMinutes, current > 0 {
-                config.roundUpMinutes = nil
+            if config.activeRoundUpMinutes != nil {
+                config.roundUpOff = true
             } else {
-                config.roundUpMinutes = 15
+                config.roundUpOff = false
+                if (config.roundUpMinutes ?? 0) <= 0 {
+                    config.roundUpMinutes = 15
+                }
             }
+            try FavoritesStore.save(config)
+        } catch {
+            presentError(error)
+        }
+    }
+
+    @objc private func toggleStartReminder() {
+        do {
+            var config = try FavoritesStore.load()
+            config.startReminder.toggle()
             try FavoritesStore.save(config)
         } catch {
             presentError(error)
@@ -379,9 +414,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
                     note: note,
                     headline: self.menuTitle(for: pair)
                 )
+                let day = WorkdayMath.dayString(from: Date())
                 let today = try? await client.today()
                 DispatchQueue.main.async {
-                    if let today { self.applyToday(today) }
+                    if let today { self.applyToday(today, day: day) }
                     self.tracker = snapshot
                     self.isBusy = false
                     self.updateStatusItem()
@@ -400,9 +436,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         Task {
             do {
                 let snapshot = try await client.resume(entry)
+                let day = WorkdayMath.dayString(from: Date())
                 let today = try? await client.today()
                 DispatchQueue.main.async {
-                    if let today { self.applyToday(today) }
+                    if let today { self.applyToday(today, day: day) }
                     self.tracker = snapshot
                     self.isBusy = false
                     self.updateStatusItem()
@@ -420,9 +457,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         Task {
             do {
                 try await client.pause(entryId: running.entryId)
+                let day = WorkdayMath.dayString(from: Date())
                 let today = try? await client.today()
                 DispatchQueue.main.async {
-                    if let today { self.applyToday(today) }
+                    if let today { self.applyToday(today, day: day) }
                     self.tracker = nil
                     self.isBusy = false
                     self.updateStatusItem()
@@ -436,7 +474,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
     @objc private func finishTimer() {
         guard !isBusy, let running = tracker else { return }
         guard let client = makeClient() else { return }
-        let increment = (try? FavoritesStore.load())?.roundUpMinutes ?? 0
+        let increment = (try? FavoritesStore.load())?.activeRoundUpMinutes ?? 0
         beginTrackingChange()
         Task {
             do {
@@ -450,9 +488,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
                 } else {
                     try await client.pause(entryId: running.entryId)
                 }
+                let day = WorkdayMath.dayString(from: Date())
                 let today = try? await client.today()
                 DispatchQueue.main.async {
-                    if let today { self.applyToday(today) }
+                    if let today { self.applyToday(today, day: day) }
                     self.tracker = nil
                     self.isBusy = false
                     self.updateStatusItem()
@@ -470,17 +509,79 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
             return
         }
         let next: Workday
+        var entryToResume: Int?
         if let workday, workday.phase == .running || !WorkdayMath.isPast(workday, now: now) {
+            if workday.phase == .paused {
+                entryToResume = workday.pausedEntryId
+            }
             next = workday.resuming(at: now)
         } else {
             next = Workday.started(now: now)
         }
         store(next)
+        markReminderHandled(now: now)
+        if let entryToResume {
+            resumeProjectTimer(entryId: entryToResume)
+        }
     }
 
+    /// Pausing working time also pauses a running project timer, since no project work happens outside working time.
     @objc private func pauseWorkday() {
         guard !isBusy, let workday, workday.phase == .running else { return }
-        store(workday.pausing(at: Date()))
+        var paused = workday.pausing(at: Date())
+        guard let running = tracker, let client = makeClient() else {
+            store(paused)
+            return
+        }
+        paused.pausedEntryId = running.entryId
+        store(paused)
+        beginTrackingChange()
+        Task {
+            do {
+                try await client.pause(entryId: running.entryId)
+                let day = WorkdayMath.dayString(from: Date())
+                let today = try? await client.today()
+                DispatchQueue.main.async {
+                    if let today { self.applyToday(today, day: day) }
+                    self.tracker = nil
+                    self.isBusy = false
+                    self.updateStatusItem()
+                }
+            } catch {
+                self.failTracking(error)
+            }
+        }
+    }
+
+    /// Starts the project timer that was paused with working time again. Skipped when another timer runs by now, or the entry is gone or locked.
+    private func resumeProjectTimer(entryId: Int) {
+        guard !isBusy, tracker == nil, let client = makeClient() else { return }
+        beginTrackingChange()
+        Task {
+            do {
+                let day = WorkdayMath.dayString(from: Date())
+                let entries = try await client.today()
+                let current = try? await client.currentTracker()
+                guard current == nil, let entry = entries.first(where: { $0.id == entryId }), !entry.locked else {
+                    DispatchQueue.main.async {
+                        self.applyToday(entries, day: day)
+                        if let current { self.tracker = current }
+                        self.isBusy = false
+                        self.updateStatusItem()
+                    }
+                    return
+                }
+                let snapshot = try await client.resume(entry)
+                DispatchQueue.main.async {
+                    self.applyToday(entries, day: day)
+                    self.tracker = snapshot
+                    self.isBusy = false
+                    self.updateStatusItem()
+                }
+            } catch {
+                self.failTracking(error)
+            }
+        }
     }
 
     @objc private func stopWorkday() {
@@ -500,10 +601,63 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         case .cancel:
             return
         case .stop:
+            let pausedEntryId = workday.pausedEntryId
             store(workday.stopping(at: Date()))
+            finishProjectTimer(pausedEntryId: pausedEntryId, then: nil)
         case .stopAndAdd:
+            let pausedEntryId = workday.pausedEntryId
             store(workday.stopping(at: Date()))
-            writeDifference(thenClear: true)
+            finishProjectTimer(pausedEntryId: pausedEntryId) { [weak self] in
+                self?.writeDifference(thenClear: true)
+            }
+        }
+    }
+
+    /// Stop ends project work too. A running timer is finished like Finish, and the entry paused with working time is rounded the same way.
+    /// `then` runs once today's entries are fresh, so the difference is measured against the rounded minutes. It is skipped when the timer could not be finished.
+    private func finishProjectTimer(pausedEntryId: Int?, then: (() -> Void)?) {
+        let running = tracker
+        guard running != nil || pausedEntryId != nil else {
+            then?()
+            return
+        }
+        guard let client = makeClient() else { return }
+        let increment = (try? FavoritesStore.load())?.activeRoundUpMinutes ?? 0
+        beginTrackingChange()
+        Task {
+            do {
+                if let running {
+                    if increment > 0 {
+                        try await client.finish(
+                            entryId: running.entryId,
+                            minutesAlready: running.minutesAlready,
+                            since: running.since,
+                            roundUpTo: increment
+                        )
+                    } else {
+                        try await client.pause(entryId: running.entryId)
+                    }
+                } else if let pausedEntryId, increment > 0 {
+                    let entries = try await client.today()
+                    if let entry = entries.first(where: { $0.id == pausedEntryId }), !entry.locked {
+                        let rounded = MinuteRounding.ceil(minutes: entry.minutes, increment: increment)
+                        if rounded != entry.minutes {
+                            try await client.saveMinutes(entryId: entry.id, minutes: rounded)
+                        }
+                    }
+                }
+                let day = WorkdayMath.dayString(from: Date())
+                let today = try await client.today()
+                DispatchQueue.main.async {
+                    self.applyToday(today, day: day)
+                    self.tracker = nil
+                    self.isBusy = false
+                    self.updateStatusItem()
+                    then?()
+                }
+            } catch {
+                self.failTracking(error)
+            }
         }
     }
 
@@ -518,11 +672,16 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         let offer = stopAndAddOffer(now: now)
         let alert = NSAlert()
         alert.messageText = "This stops the day for today"
+        var text: String
         if let offer {
-            alert.informativeText = "Stop leaves the time already counted, and this day cannot be resumed. \(offer.button) writes that difference to \(offer.pair) and clears the clock."
+            text = "Stop leaves the time already counted, and this day cannot be resumed. \(offer.button) writes that difference to \(offer.pair) and clears the clock."
         } else {
-            alert.informativeText = "The time already counted stays. This day cannot be resumed."
+            text = "The time already counted stays. This day cannot be resumed."
         }
+        if let note = projectTimerStopNote() {
+            text += " " + note
+        }
+        alert.informativeText = text
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Stop working time")
         if let offer {
@@ -542,7 +701,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         guard let config = try? FavoritesStore.load(), !config.account.isEmpty, let pair = config.differencePair else { return nil }
         guard isPairAvailable(pair) else { return nil }
         guard differenceIsLoaded(now: now) else { return nil }
-        let gap = currentGapMinutes(now: now)
+        let gap = currentGapMinutes(now: now, afterFinish: true)
         guard gap > 0 else { return nil }
         return ("Stop and add \(gap) min", menuTitle(for: pair))
     }
@@ -551,6 +710,94 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
     @objc private func systemDidWake(_ notification: Notification) {
         normalizeWorkdayClock()
         updateStatusItem()
+        noteLogon(fromWake: true)
+    }
+
+    @objc private func userDidLogOn(_ notification: Notification) {
+        noteLogon()
+    }
+
+    // MARK: Morning reminder
+
+    private enum ReminderKey {
+        static let firstLogonDay = "firstLogonDay"
+        static let firstLogonAt = "firstLogonAt"
+        static let handledDay = "startReminderHandledDay"
+    }
+
+    /// Saves the first log-on of the day, then asks to start working time when the reminder applies.
+    /// `fromWake` is a launch or wake, which can happen on the lock screen. When the reminder counts from the unlock, those are skipped while the screen is locked, and the unlock notification follows.
+    private func noteLogon(fromWake: Bool = false, now: Date = Date()) {
+        if fromWake, screenIsLocked(), (try? FavoritesStore.load())?.reminderFromUnlock == true {
+            return
+        }
+        let defaults = UserDefaults.standard
+        let today = WorkdayMath.dayString(from: now)
+        if defaults.string(forKey: ReminderKey.firstLogonDay) != today {
+            defaults.set(today, forKey: ReminderKey.firstLogonDay)
+            defaults.set(now, forKey: ReminderKey.firstLogonAt)
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.offerStartReminder()
+        }
+    }
+
+    private func screenIsLocked() -> Bool {
+        guard let session = CGSessionCopyCurrentDictionary() as? [String: Any] else { return false }
+        return session["CGSSessionScreenIsLocked"] as? Bool ?? false
+    }
+
+    private func firstLogon(now: Date) -> Date {
+        let defaults = UserDefaults.standard
+        guard defaults.string(forKey: ReminderKey.firstLogonDay) == WorkdayMath.dayString(from: now),
+              let date = defaults.object(forKey: ReminderKey.firstLogonAt) as? Date,
+              date <= now
+        else { return now }
+        return date
+    }
+
+    private func markReminderHandled(now: Date) {
+        UserDefaults.standard.set(WorkdayMath.dayString(from: now), forKey: ReminderKey.handledDay)
+    }
+
+    private func reminderApplies(now: Date) -> Bool {
+        guard !isBusy, !reminderShowing else { return false }
+        normalizeWorkdayClock(now: now)
+        return WorkdayMath.shouldRemindToStart(
+            workday: workday,
+            now: now,
+            handledDay: UserDefaults.standard.string(forKey: ReminderKey.handledDay),
+            enabled: (try? FavoritesStore.load())?.startReminder ?? true
+        )
+    }
+
+    private func offerStartReminder() {
+        guard reminderApplies(now: Date()) else { return }
+        reminderShowing = true
+        let start = firstLogon(now: Date())
+        let time = DateFormatter.localizedString(from: start, dateStyle: .none, timeStyle: .short)
+        activateApp()
+        let alert = NSAlert()
+        alert.messageText = "Start working time?"
+        alert.informativeText = "You first logged on at \(time). Working time counts from then."
+        alert.addButton(withTitle: "Start from \(time)")
+        alert.addButton(withTitle: "Later")
+        alert.addButton(withTitle: "Not today")
+        alert.window.level = .floating
+        let response = alert.runModal()
+        reminderShowing = false
+        // The state may have changed while the dialog was open, for example a start from the menu.
+        let now = Date()
+        switch response {
+        case .alertFirstButtonReturn:
+            guard reminderApplies(now: now) else { return }
+            store(Workday.started(now: firstLogon(now: now)))
+            markReminderHandled(now: now)
+        case .alertThirdButtonReturn:
+            markReminderHandled(now: now)
+        default:
+            break
+        }
     }
 
     @objc private func bookDifference() {
@@ -599,7 +846,7 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
                 if day == WorkdayMath.dayString(from: Date()) {
                     let todayEntries = try? await client.today()
                     DispatchQueue.main.async {
-                        if let todayEntries { self.applyToday(todayEntries) }
+                        if let todayEntries { self.applyToday(todayEntries, day: day) }
                         if thenClear, self.workday?.day == day { self.clearWorkday() }
                         self.isBusy = false
                         self.updateStatusItem()
@@ -657,28 +904,53 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         refreshPastEntries()
     }
 
-    private func currentGapMinutes(now: Date) -> Int {
+    /// `afterFinish` measures against the minutes Stop leaves once it has finished the project timer.
+    private func currentGapMinutes(now: Date, afterFinish: Bool = false) -> Int {
         guard let workday else { return 0 }
         let includeTracker = workday.day == WorkdayMath.dayString(from: now)
-        return WorkdayMath.gapMinutes(
-            elapsed: workday.elapsed(at: now),
-            bookedMinutes: WorkdayMath.bookedMinutes(
-                entries: entriesForDifference(now: now),
-                tracker: includeTracker ? tracker : nil,
+        let entries = entriesForDifference(now: now)
+        let booked: Int
+        if afterFinish, includeTracker {
+            booked = WorkdayMath.bookedMinutesAfterFinish(
+                entries: entries,
+                tracker: tracker,
+                pausedEntryId: workday.pausedEntryId,
+                increment: (try? FavoritesStore.load())?.activeRoundUpMinutes,
                 now: now
             )
-        )
+        } else {
+            booked = WorkdayMath.bookedMinutes(entries: entries, tracker: includeTracker ? tracker : nil, now: now)
+        }
+        return WorkdayMath.gapMinutes(elapsed: workday.elapsed(at: now), bookedMinutes: booked)
+    }
+
+    /// Tells the Stop warning what happens to project time.
+    private func projectTimerStopNote() -> String? {
+        let rounds = (try? FavoritesStore.load())?.activeRoundUpMinutes != nil
+        if let tracker {
+            let name = tracker.headline.isEmpty ? "The running project timer" : "The running timer for \(tracker.headline)"
+            return rounds ? "\(name) is finished and rounded up." : "\(name) stops too."
+        }
+        if workday?.pausedEntryId != nil, rounds {
+            return "The project paused with working time is finished and rounded up."
+        }
+        return nil
+    }
+
+    /// True when the today list belongs to the current calendar day.
+    private func todayIsCurrent(now: Date) -> Bool {
+        todayLoaded && todayDay == WorkdayMath.dayString(from: now)
     }
 
     private func entriesForDifference(now: Date) -> [TodayEntry] {
         guard let workday else { return [] }
-        if workday.day == WorkdayMath.dayString(from: now) { return todayEntries }
+        if workday.day == WorkdayMath.dayString(from: now) { return todayIsCurrent(now: now) ? todayEntries : [] }
         return pastDay == workday.day ? pastEntries : []
     }
 
     private func differenceIsLoaded(now: Date) -> Bool {
         guard let workday else { return false }
-        if workday.day == WorkdayMath.dayString(from: now) { return todayLoaded }
+        if workday.day == WorkdayMath.dayString(from: now) { return todayIsCurrent(now: now) }
         return pastLoaded && pastDay == workday.day
     }
 
@@ -760,17 +1032,18 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         } catch {
             return
         }
+        let day = WorkdayMath.dayString(from: Date())
         Task {
             do {
                 let entries = try await client.today()
                 DispatchQueue.main.async {
                     guard epoch == self.todayEpoch else { return }
-                    self.applyToday(entries)
+                    self.applyToday(entries, day: day)
                 }
             } catch {
                 DispatchQueue.main.async {
                     guard epoch == self.todayEpoch else { return }
-                    if self.todayEntries.isEmpty {
+                    if self.todayEntries.isEmpty || self.todayDay != day {
                         self.todayLoaded = false
                         self.todayError = "Today's entries could not be loaded"
                     }
@@ -779,9 +1052,10 @@ final class AppController: NSObject, NSApplicationDelegate, NSMenuDelegate, @unc
         }
     }
 
-    private func applyToday(_ entries: [TodayEntry]) {
+    private func applyToday(_ entries: [TodayEntry], day: String) {
         todayEpoch += 1
         todayEntries = entries
+        todayDay = day
         todayLoaded = true
         todayError = nil
     }

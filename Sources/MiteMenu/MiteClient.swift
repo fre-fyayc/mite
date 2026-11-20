@@ -197,12 +197,12 @@ struct MiteClient {
 
     private func mapEntries(_ data: Data) throws -> [TodayEntry] {
         let entries = try decode([TimeEntryBox].self, from: data).map(\.timeEntry)
-        return entries.sorted { lhs, rhs in
-            let left = parseISO(lhs.updatedAt) ?? .distantPast
-            let right = parseISO(rhs.updatedAt) ?? .distantPast
-            if left != right { return left > right }
-            return lhs.id > rhs.id
-        }.map { entry in
+        // Parse each date once, not on every comparison.
+        let dated = entries.map { (entry: $0, updated: parseISO($0.updatedAt) ?? .distantPast) }
+        return dated.sorted { lhs, rhs in
+            if lhs.updated != rhs.updated { return lhs.updated > rhs.updated }
+            return lhs.entry.id > rhs.entry.id
+        }.map(\.entry).map { entry in
             TodayEntry(
                 id: entry.id,
                 minutes: max(0, entry.minutes ?? 0),
@@ -227,7 +227,7 @@ struct MiteClient {
         day: String? = nil
     ) async throws -> TimeEntryBody {
         let payload = TimeEntryPayload(timeEntry: TimeEntryWrite(
-            dateAt: day ?? Self.todayString(),
+            dateAt: day ?? WorkdayMath.dayString(from: Date()),
             minutes: minutes,
             note: note,
             projectId: projectId,
@@ -327,15 +327,6 @@ struct MiteClient {
         return text
     }
 
-    private static func todayString() -> String {
-        let formatter = DateFormatter()
-        formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = .current
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: Date())
-    }
-
     private func parseSince(_ value: String?, minutes: Int?) -> Date {
         if let date = parseISO(value) {
             return date
@@ -348,10 +339,14 @@ struct MiteClient {
         if let date = try? Date(value, strategy: .iso8601) {
             return date
         }
+        return Self.fractionalISO.date(from: value)
+    }
+
+    private static let fractionalISO: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter.date(from: value)
-    }
+        return formatter
+    }()
 
     private func headline(customer: String?, project: String?, service: String?) -> String {
         let serviceName = nonEmpty(service) ?? ""

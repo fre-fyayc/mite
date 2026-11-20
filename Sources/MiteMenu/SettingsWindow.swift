@@ -12,6 +12,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, @unc
     private let hoursField = NSTextField()
     private let gapPopup = NSPopUpButton()
     private let saveWorkdayButton = NSButton()
+    private let reminderStartPopup = NSPopUpButton()
     private let statusLabel = NSTextField(wrappingLabelWithString: "")
     private var gapPairs: [FavoritePair] = []
 
@@ -22,7 +23,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, @unc
 
     init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 700),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 780),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -99,6 +100,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, @unc
         saveWorkdayButton.target = self
         saveWorkdayButton.action = #selector(saveWorkingTime)
 
+        configure(popup: reminderStartPopup)
+        reminderStartPopup.addItems(withTitles: ["Opening the lid or waking the Mac", "Unlocking the screen"])
+        reminderStartPopup.target = self
+        reminderStartPopup.action = #selector(saveReminderStart)
+
         statusLabel.maximumNumberOfLines = 3
         statusLabel.font = NSFont.systemFont(ofSize: NSFont.smallSystemFontSize)
         statusLabel.textColor = .secondaryLabelColor
@@ -137,6 +143,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, @unc
             gapPopup,
             workdayHint,
             saveWorkdayButton,
+            heading("Morning reminder"),
+            NSTextField(labelWithString: "Working time starts from"),
+            reminderStartPopup,
             statusLabel,
             hint,
         ]
@@ -146,6 +155,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, @unc
         stack.setCustomSpacing(16, after: connectButton)
         stack.setCustomSpacing(16, after: addButton)
         stack.setCustomSpacing(16, after: saveWorkdayButton)
+        stack.setCustomSpacing(16, after: reminderStartPopup)
 
         content.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -158,6 +168,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, @unc
             servicePopup.widthAnchor.constraint(equalToConstant: 460),
             hoursField.widthAnchor.constraint(equalToConstant: 120),
             gapPopup.widthAnchor.constraint(equalToConstant: 460),
+            reminderStartPopup.widthAnchor.constraint(equalToConstant: 460),
             workdayHint.widthAnchor.constraint(equalToConstant: 460),
             statusLabel.widthAnchor.constraint(equalToConstant: 460),
             hint.widthAnchor.constraint(equalToConstant: 460),
@@ -304,6 +315,22 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate, @unc
             hoursField.stringValue = ""
         }
         fillGapPopup(projectId: config?.differenceProjectId, serviceId: config?.differenceServiceId)
+        reminderStartPopup.selectItem(at: config?.reminderFromUnlock == true ? 1 : 0)
+    }
+
+    /// Saved as soon as the choice changes. It only affects the time the morning reminder offers.
+    @objc private func saveReminderStart() {
+        let fromUnlock = reminderStartPopup.indexOfSelectedItem == 1
+        do {
+            var config = try FavoritesStore.load()
+            config.reminderFromUnlock = fromUnlock
+            try FavoritesStore.save(config)
+            setStatus(fromUnlock
+                ? "The morning reminder now counts from unlocking the screen."
+                : "The morning reminder now counts from opening the lid or waking the Mac.", isError: false)
+        } catch {
+            setStatus(error.localizedDescription, isError: true)
+        }
     }
 
     @objc private func saveWorkingTime() {
