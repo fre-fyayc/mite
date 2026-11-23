@@ -4,6 +4,25 @@ A small macOS menu-bar timer for [mite](https://mite.de). It replaces the part o
 
 Version 0.4.
 
+## Quick start
+
+### Set up once
+
+1. [Install the app](#install-the-app) and add it to your login items.
+2. Click the timer icon in the menu bar and choose **Connect…**. Enter your mite subdomain and API key.
+3. Choose **Add pair…** for each project and service you book often, such as **Customer — Consulting**.
+4. Choose **Daily hours…**. Enter your daily hours, such as `8`, and choose the pair that receives the difference between working time and booked time.
+
+### Every day
+
+1. **Log on.** On a weekday, mite menu asks whether to start working time. Choose **Start**. You can also choose **Start working time** from the menu.
+2. **Start a task.** Click the timer icon and pick a pair. Type a ticket id or a short note and press Return. The project timer runs in mite.
+3. **Switch tasks.** Pick another pair. The running task pauses on its own.
+4. **Take a break.** Choose **Pause working time**. The project timer pauses with it. Choose **Resume working time** to continue both.
+5. **Continue a task.** Choose it under **Today**. It keeps its note.
+6. **Finish a task.** Choose **Finish**. The whole entry is rounded up to the next 15 minutes.
+7. **End the day.** Choose **Stop working time**. If the clock is ahead of the booked time, choose **Stop and add N min** to book the difference.
+
 ## What's new in 0.4
 
 **Working time.** Start it in the morning, pause it for a break, and stop it when the day is done. Stop asks before it ends the day. That day cannot be resumed. When the clock is longer than the minutes already booked, the warning also offers to add that difference and clear the clock. The clock keeps running while the Mac is idle, asleep, or closed, and while the app is quit. It stops on its own after 10 hours and 45 minutes. This clock is the whole day, separate from the project timer, and it does not round. Set daily hours, such as 8, and the menu-bar time turns red after that.
